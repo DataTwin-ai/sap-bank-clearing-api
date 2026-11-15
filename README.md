@@ -22,7 +22,7 @@ Excel / JSON items ──► POST /api/bank/post
 | `bank_posting/posting.py` | Excel/JSON parsing, SAP validation, RFC posting |
 | `bank_posting/document_link.py` | Writes SAP document numbers back to the DB |
 | `bank_posting/sap_abap/` | ABAP source of `Z_BANK_POST_CLEAR` (install in SAP) |
-| `db_manager.py` | PostgreSQL engine/credentials from `config.ini` |
+| `db_manager.py` | PostgreSQL engine/credentials from `config.ini` or `DB_*` env vars |
 | `sap_odata_extractor.py` | SAP OData client (reads `[sap]` from `config.ini` or `SAP_*` env vars) |
 | `logger_setup.py` | Console + timestamped file logging into `log/` |
 | `config.example.ini` | Template for `config.ini` (never commit the real one) |
@@ -85,6 +85,8 @@ All settings live in `config.ini` at the project root (copy `config.example.ini`
 
 SAP settings can also be given as environment variables (`SAP_HOST`, `SAP_PORT`,
 `SAP_CLIENT`, `SAP_USER`, `SAP_PASSWORD`, …), which take precedence over `config.ini`.
+Database settings work the same way: `APP_ENV`, `DB_HOST`, `DB_PORT`, `DB_NAME`,
+`DB_USER`, `DB_PASSWORD`. If `DB_HOST` and `DB_PASSWORD` are set, `config.ini` is optional.
 
 ## Run locally
 

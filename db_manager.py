@@ -65,26 +65,50 @@ def load_config() -> configparser.ConfigParser:
 
 def get_db_credentials(env: Optional[str] = None) -> Dict[str, Any]:
     """
-    Extracts database credentials for the given environment (default: config.ini setting).
-    """
-    config = load_config()
-    target_env = env or config.get("environment", "current_env", fallback="development")
+    Extracts database credentials for the given environment.
 
-    if not config.has_section(target_env):
+    Environment variables take precedence over config.ini, so a deployment can
+    supply secrets without a config file:
+      APP_ENV (or DB_ENV), DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+    If DB_HOST and DB_PASSWORD are set, config.ini is optional.
+    """
+    config = configparser.ConfigParser()
+    if CONFIG_PATH.exists():
+        config.read(CONFIG_PATH, encoding="utf-8")
+    elif not (os.getenv("DB_HOST") and os.getenv("DB_PASSWORD")):
+        raise FileNotFoundError(
+            f"Configuration file not found: {CONFIG_PATH} "
+            "(or set DB_HOST, DB_PASSWORD, ... environment variables)"
+        )
+
+    target_env = (
+        env
+        or os.getenv("APP_ENV")
+        or os.getenv("DB_ENV")
+        or config.get("environment", "current_env", fallback="development")
+    )
+
+    def val(env_key: str, ini_key: str, default: str = "") -> str:
+        if os.getenv(env_key):
+            return os.getenv(env_key, "").strip()
+        if config.has_section(target_env):
+            return config.get(target_env, ini_key, fallback=default)
+        return default
+
+    if not config.has_section(target_env) and not os.getenv("DB_HOST"):
         raise ValueError(f"Environment section '[{target_env}]' not found in config.ini")
 
-    tenant_id = config.get("defaults", "tenant_id", fallback="dm00005")
-    db_name = config.get(target_env, "db_name", fallback=tenant_id.lower())
+    tenant_id = os.getenv("TENANT_ID") or config.get("defaults", "tenant_id", fallback="dm00005")
 
     return {
         "env": target_env,
-        "host": config.get(target_env, "ec2_ip"),
-        "port": int(config.get(target_env, "port", fallback="5433")),
-        "user": config.get(target_env, "db_user", fallback="postgres"),
-        "password": config.get(target_env, "db_password", fallback=""),
-        "database": db_name,
-        "region": config.get(target_env, "region_name", fallback="us-east-1"),
-        "suffix_db": config.get(target_env, "suffix_db", fallback=""),
+        "host": val("DB_HOST", "ec2_ip"),
+        "port": int(val("DB_PORT", "port", "5433") or 5433),
+        "user": val("DB_USER", "db_user", "postgres"),
+        "password": val("DB_PASSWORD", "db_password", ""),
+        "database": val("DB_NAME", "db_name", tenant_id.lower()),
+        "region": val("DB_REGION", "region_name", "us-east-1"),
+        "suffix_db": val("DB_SUFFIX", "suffix_db", ""),
     }
 
 

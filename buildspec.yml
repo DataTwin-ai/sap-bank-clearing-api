@@ -1,0 +1,113 @@
+# =============================================================================
+# CodeBuild: sap-bank-clearing-api (us-east-1)
+#   1. Build the Docker image
+#   2. Push it to ECR (<account>.dkr.ecr.us-east-1.amazonaws.com/sap-bank-clearing-api)
+#   3. Deploy to EC2 via SSM Run Command (runs deploy/deploy.sh on the host)
+#
+# Requires: project "Privileged mode" = enabled (Docker builds).
+# Override any variable below in the CodeBuild project's environment settings.
+# =============================================================================
+version: 0.2
+
+env:
+  variables:
+    AWS_DEFAULT_REGION: "us-east-1"
+    ECR_REPO_NAME: "sap-bank-clearing-api"
+    # Target EC2 instance(s), comma-separated (development host, us-east-1)
+    DEPLOY_INSTANCE_IDS: "i-019cd9689708261b3"
+    # Set to "false" to only build + push (no EC2 deploy)
+    DEPLOY_ENABLED: "true"
+    HOST_PORT: "8000"
+    CONFIG_PARAM: "/sap-bank-clearing-api/config.ini"
+    DEPLOY_TIMEOUT_SECONDS: "600"
+
+phases:
+  install:
+    commands:
+      - echo "Docker $(docker --version)"
+      - aws --version
+
+  pre_build:
+    commands:
+      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+      - IMAGE_REPO="${REGISTRY}/${ECR_REPO_NAME}"
+      - COMMIT_TAG=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
+      - IMAGE_TAG="${COMMIT_TAG}-${CODEBUILD_BUILD_NUMBER:-0}"
+      - echo "Image -> ${IMAGE_REPO}:${IMAGE_TAG}"
+      # Create the ECR repository on first run (scan on push, immutable tags off so :latest can move)
+      - |
+        aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" >/dev/null 2>&1 || \
+          aws ecr create-repository --repository-name "$ECR_REPO_NAME" \
+            --image-scanning-configuration scanOnPush=true >/dev/null
+      - aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+      # Pull previous image to reuse its layers as cache (ignore failure on first build)
+      - docker pull "${IMAGE_REPO}:latest" || true
+
+  build:
+    commands:
+      - |
+        docker build \
+          --cache-from "${IMAGE_REPO}:latest" \
+          --label "org.opencontainers.image.revision=${CODEBUILD_RESOLVED_SOURCE_VERSION}" \
+          -t "${IMAGE_REPO}:${IMAGE_TAG}" \
+          -t "${IMAGE_REPO}:latest" .
+      # Smoke test: container must answer /health without config.ini
+      - docker run -d --name smoke -p 8000:8000 "${IMAGE_REPO}:${IMAGE_TAG}"
+      - |
+        for i in $(seq 1 20); do
+          curl -fsS http://127.0.0.1:8000/health && break
+          [ "$i" -eq 20 ] && { docker logs smoke; exit 1; }
+          sleep 2
+        done
+      - docker rm -f smoke
+
+  post_build:
+    commands:
+      # post_build runs even when build fails; stop here in that case
+      - '[ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ] || { echo "Build failed - skipping push/deploy"; exit 1; }'
+      - docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+      - docker push "${IMAGE_REPO}:latest"
+      - printf '{"image":"%s","tag":"%s"}' "${IMAGE_REPO}:${IMAGE_TAG}" "$IMAGE_TAG" > image.json
+      - |
+        if [ "$DEPLOY_ENABLED" != "true" ]; then
+          echo "DEPLOY_ENABLED=$DEPLOY_ENABLED - skipping EC2 deployment"
+          exit 0
+        fi
+        set -e
+        SCRIPT_B64=$(base64 -w0 deploy/deploy.sh)
+        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/sap-bank-deploy.sh && HOST_PORT=${HOST_PORT} CONFIG_PARAM=${CONFIG_PARAM} bash /tmp/sap-bank-deploy.sh ${IMAGE_REPO}:${IMAGE_TAG} ${AWS_DEFAULT_REGION}"
+        python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":[sys.argv[2]]}))' \
+          "$CMD" "$DEPLOY_TIMEOUT_SECONDS" > ssm-params.json
+
+        COMMAND_ID=$(aws ssm send-command \
+          --document-name "AWS-RunShellScript" \
+          --comment "sap-bank-clearing-api ${IMAGE_TAG}" \
+          --targets "Key=InstanceIds,Values=${DEPLOY_INSTANCE_IDS}" \
+          --parameters file://ssm-params.json \
+          --timeout-seconds 120 \
+          --query Command.CommandId --output text)
+        echo "SSM command: $COMMAND_ID"
+
+        # Wait for all targeted instances to finish
+        END=$(( $(date +%s) + DEPLOY_TIMEOUT_SECONDS + 60 ))
+        while :; do
+          sleep 10
+          STATUSES=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" \
+            --query "CommandInvocations[].Status" --output text)
+          echo "Invocation status: ${STATUSES:-<pending>}"
+          if [ -n "$STATUSES" ] && ! echo "$STATUSES" | grep -qE "Pending|InProgress|Delayed"; then break; fi
+          [ "$(date +%s)" -gt "$END" ] && { echo "Timed out waiting for SSM"; exit 1; }
+        done
+
+        # Print each host's output, fail the build if any host failed
+        aws ssm list-command-invocations --command-id "$COMMAND_ID" --details \
+          --query "CommandInvocations[].{instance:InstanceId,status:Status,output:CommandPlugins[0].Output}" \
+          --output text
+        [ -z "$(echo "$STATUSES" | tr '\t' '\n' | grep -v '^Success$')" ] || { echo "Deployment failed on at least one instance"; exit 1; }
+        echo "Deployed ${IMAGE_REPO}:${IMAGE_TAG} to ${DEPLOY_INSTANCE_IDS}"
+
+artifacts:
+  files:
+    - image.json
+  discard-paths: yes

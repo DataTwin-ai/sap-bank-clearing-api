@@ -1,0 +1,15 @@
+.git
+.gitignore
+**/__pycache__
+**/*.pyc
+config.ini
+.env
+log/
+data/
+deploy/
+buildspec.yml
+Dockerfile
+.dockerignore
+*.md
+bank_posting/*.html
+bank_posting/sap_abap/

@@ -10,6 +10,11 @@
 !/main.py
 !/api.py
 !/bank_posting/
+!/Dockerfile
+!/.dockerignore
+!/buildspec.yml
+!/deploy/
+!/DEPLOYMENT_PLAN.md
 
 # never commit
 config.ini

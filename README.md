@@ -1,30 +1,121 @@
-# SAP Bank Posting with Clearing
+# SAP Bank Posting with Clearing API
 
-API that posts bank receipts in SAP S/4HANA and clears the matching customer
-invoice in one step, then writes the SAP document number back to the DataTwin
-tables `active_bt3i` / `active_bs`.
+FastAPI service that posts bank receipts in SAP S/4HANA **and clears the matching
+customer invoice in one step**, then writes the SAP document number back to the
+DataTwin PostgreSQL tables `active_bt3i` / `active_bs`.
 
-- Module and usage: [bank_posting/README.md](bank_posting/README.md)
-- Process guide: [bank_posting/BANK_POSTING_PROCESS.md](bank_posting/BANK_POSTING_PROCESS.md)
-- Clearing and DB update details: [bank_posting/CLEARING_AND_DB_UPDATE.md](bank_posting/CLEARING_AND_DB_UPDATE.md)
-- SAP function module: [bank_posting/sap_abap/](bank_posting/sap_abap/)
-
-## Setup & Run
-
-```bash
-pip install -r requirements.txt
-cp config.example.ini config.ini     # fill in DB and SAP credentials
-
-# Option 1: Run main application (port 8000)
-uvicorn main:app --reload
-# or: python main.py
-
-# Option 2: Run bank posting standalone server (port 8001)
-python bank_posting/server.py --port 8001
+```
+Excel / JSON items ──► POST /api/bank/post
+                         │
+                         ├─ validate rows + match open items (SAP BSID via OData ZGENERIC_DATA_SRV)
+                         ├─ post + clear in SAP   (RFC Z_BANK_POST_CLEAR via /sap/bc/soap/rfc)
+                         └─ update active_bt3i / active_bs with document number (PostgreSQL)
 ```
 
-Interactive Swagger documentation is available at:
-- `http://localhost:8000/docs` (or `http://localhost:8001/docs`)
+## Repository layout
 
-Shared helpers used by the module: `logger_setup.py`, `db_manager.py`,
-`sap_odata_extractor.py`.
+| Path | Purpose |
+|---|---|
+| `main.py` | Application entry point (`uvicorn main:app`, port 8000) |
+| `api.py` | Compatibility entry point (`uvicorn api:app`) |
+| `bank_posting/server.py` | FastAPI app, request/response schemas, endpoints |
+| `bank_posting/posting.py` | Excel/JSON parsing, SAP validation, RFC posting |
+| `bank_posting/document_link.py` | Writes SAP document numbers back to the DB |
+| `bank_posting/sap_abap/` | ABAP source of `Z_BANK_POST_CLEAR` (install in SAP) |
+| `db_manager.py` | PostgreSQL engine/credentials from `config.ini` |
+| `sap_odata_extractor.py` | SAP OData client (reads `[sap]` from `config.ini` or `SAP_*` env vars) |
+| `logger_setup.py` | Console + timestamped file logging into `log/` |
+| `config.example.ini` | Template for `config.ini` (never commit the real one) |
+| `Dockerfile`, `.dockerignore` | Container image |
+| `buildspec.yml` | AWS CodeBuild: build → push to ECR → deploy to EC2 |
+| `deploy/deploy.sh` | Runs on EC2 (via SSM) to pull and restart the container |
+| `DEPLOYMENT_PLAN.md` | One-time AWS setup and CI/CD plan |
+
+More detail:
+[module usage](bank_posting/README.md) ·
+[process guide](bank_posting/BANK_POSTING_PROCESS.md) ·
+[clearing & DB update](bank_posting/CLEARING_AND_DB_UPDATE.md) ·
+[SAP function module](bank_posting/sap_abap/)
+
+## API
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/` | Redirects to `/docs` |
+| GET | `/health` | Liveness check → `{"status":"ok","service":"bank_posting"}` |
+| POST | `/api/bank/post` | Validate / post / clear bank receipts |
+| GET | `/docs`, `/redoc` | Swagger UI / ReDoc |
+
+Request body for `POST /api/bank/post` (send **either** `items` **or** `file_path`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `items` | – | List of posting rows (`doc_date`, `posting_date`, `company_code`, `currency`, `customer`, `bank_gl`, `amount`, `invoice_ref`, `utr`, `item_text`, …) |
+| `file_path` | – | Excel file on the server (17 columns as `ZFI_BANK_PROGRAM`); in Docker use `/app/data/<file>.xlsx` |
+| `sheet` | first sheet | Excel sheet name |
+| `dry_run` | `false` | Validate against SAP only, do not post |
+| `match_by` | `XBLNR` | Invoice match field: `XBLNR` \| `ZUONR` \| `BELNR` |
+| `check_open_items` | from config | Validate against live SAP BSID before posting |
+| `update_db` | `true` | Write document numbers to `active_bt3i` / `active_bs` |
+
+Example (dry run):
+
+```bash
+curl -X POST http://localhost:8000/api/bank/post \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run": true, "items": [{"company_code":"DAT1","customer":"30000001","bank_gl":"410000",
+       "amount":1858500.0,"currency":"INR","invoice_ref":"0090000057","utr":"UTR123456789",
+       "doc_date":"2026-11-15","posting_date":"2026-11-15"}]}'
+```
+
+Row statuses in the response: `VALID`, `INVALID`, `SUCCESS`, `POSTED_NOT_CLEARED`, `ERROR`, `NOT_POSTED`.
+
+## Configuration
+
+All settings live in `config.ini` at the project root (copy `config.example.ini`):
+
+| Section | Used for |
+|---|---|
+| `[environment]` | `current_env` (`development` / `production`), log settings |
+| `[development]` / `[production]` | PostgreSQL host, port, db, user, password |
+| `[defaults]` | `tenant_id`, `org_id` |
+| `[sap]` | SAP host/port/client/user/password, OData service, TLS, timeouts |
+| `[bank_posting]` | RFC name, default doc type, match field, open-item check |
+
+SAP settings can also be given as environment variables (`SAP_HOST`, `SAP_PORT`,
+`SAP_CLIENT`, `SAP_USER`, `SAP_PASSWORD`, …), which take precedence over `config.ini`.
+
+## Run locally
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+cp config.example.ini config.ini                    # fill in DB and SAP credentials
+uvicorn main:app --reload --port 8000               # or: python main.py
+```
+
+Standalone module server (port 8001): `python bank_posting/server.py --port 8001`.
+
+## Run with Docker
+
+```bash
+docker build -t sap-bank-clearing-api .
+docker run -d --name sap-bank-clearing-api -p 8000:8000 \
+  -v "$PWD/config.ini:/app/config.ini:ro" \
+  -v "$PWD/log:/app/log" \
+  -v "$PWD/data:/app/data" \
+  sap-bank-clearing-api
+curl http://localhost:8000/health
+```
+
+`config.ini` is never baked into the image; it is mounted at runtime.
+
+## Deployment (AWS, us-east-1)
+
+Push to `main` → CodeBuild `sap-bank-clearing-api` builds the image, pushes it to
+ECR `sap-bank-clearing-api`, and deploys it to the EC2 host(s) tagged
+`Name=development` through SSM Run Command, with a health check and automatic
+rollback. On the host the service runs as container `sap-bank-clearing-api` on
+port 8000, with config/logs/data under `/opt/sap-bank-clearing-api/`.
+
+See **[DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md)** for the one-time AWS setup and operations.

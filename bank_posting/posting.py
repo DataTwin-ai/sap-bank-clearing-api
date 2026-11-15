@@ -151,13 +151,63 @@ def data_dir() -> Path:
     return path if path.is_absolute() else Path.cwd() / path
 
 
+_S3_HTTP_PATTERNS = (
+    # https://<bucket>.s3.<region>.amazonaws.com/<key>  or  https://<bucket>.s3.amazonaws.com/<key>
+    re.compile(r"^https?://(?P<bucket>[^./]+(?:\.[^./]+)*?)\.s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com/(?P<key>.+)$", re.I),
+    # https://s3.<region>.amazonaws.com/<bucket>/<key>
+    re.compile(r"^https?://s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com/(?P<bucket>[^/]+)/(?P<key>.+)$", re.I),
+)
+
+
+def parse_s3_uri(file_path: str) -> Optional[Tuple[str, str]]:
+    """Return (bucket, key) for s3://bucket/key or an S3 https URL, else None."""
+    from urllib.parse import unquote
+
+    fp = (file_path or "").strip()
+    if fp.lower().startswith("s3://"):
+        bucket, _, key = fp[5:].partition("/")
+        return (bucket, key) if bucket and key else None
+    for pat in _S3_HTTP_PATTERNS:
+        m = pat.match(fp.split("?", 1)[0])
+        if m:
+            return m.group("bucket"), unquote(m.group("key"))
+    return None
+
+
+def download_from_s3(bucket: str, key: str) -> Path:
+    """Download s3://bucket/key into <data>/s3/ and return the local path."""
+    import boto3
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", PureWindowsPath(key).name) or "file.xlsx"
+    folder = data_dir() / "s3"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
+    try:
+        boto3.client("s3", region_name=region).download_file(bucket, key, str(target))
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey", "NoSuchBucket"):
+            raise FileNotFoundError(f"S3 file not found: s3://{bucket}/{key}") from e
+        raise RuntimeError(f"Could not download s3://{bucket}/{key}: {code or e}") from e
+    except BotoCoreError as e:
+        raise RuntimeError(f"Could not download s3://{bucket}/{key}: {e}") from e
+    logger.info(f"[BANK POST] downloaded s3://{bucket}/{key} -> {target}")
+    return target
+
+
 def resolve_excel_path(file_path: str) -> Path:
     """
-    Use file_path as given if it exists on this server. Otherwise look for a file
+    s3://bucket/key (or an S3 https URL) is downloaded from S3 first.
+    Otherwise use file_path as given if it exists on this server. Otherwise look for a file
     with the same name in the data folder, so a client can send a Windows path
     such as 'C:/SAP/log/BANK.xlsx' (or with backslashes) and the server
     uses data/BANK.xlsx.
     """
+    s3 = parse_s3_uri(file_path)
+    if s3:
+        return download_from_s3(*s3)
     path = Path(file_path)
     if path.is_file():
         return path

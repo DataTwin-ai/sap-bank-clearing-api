@@ -110,7 +110,8 @@ class BankPostingRequest(BaseModel):
     file_path: Optional[str] = Field(
         default=None,
         description=(
-            "Path to the Excel file. If the path does not exist on the server, a file with the "
+            "Excel file: an S3 location (s3://bucket/key or https://bucket.s3.amazonaws.com/key), "
+            "or a path on the server. If a path does not exist on the server, a file with the "
             "same name in the server data folder is used (e.g. C:\SAP\log\BANK.xlsx -> data/BANK.xlsx)."
         ),
         example="data/BANK EXCEL SHEET.xlsx" if not PYDANTIC_V2 else None,

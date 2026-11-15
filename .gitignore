@@ -7,6 +7,8 @@
 !/logger_setup.py
 !/db_manager.py
 !/sap_odata_extractor.py
+!/main.py
+!/api.py
 !/bank_posting/
 
 # never commit

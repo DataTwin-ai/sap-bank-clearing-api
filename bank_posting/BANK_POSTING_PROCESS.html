@@ -1,0 +1,507 @@
+<title>Bank Posting with Clearing</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: runbook — sticky section index on the left, one reading column; ledger (Dr/Cr) motifs for SAP FI */
+:root{
+  --bg:#f6f7f8; --surface:#ffffff; --sunken:#eef1f3; --line:#d9dee2;
+  --fg:#17202a; --muted:#5a6773;
+  --accent:#0d6b73; --accent-soft:#e1f0f1;
+  --dr:#1f5fa8; --cr:#a2581b;
+  --ok:#1e7a46; --ok-soft:#e3f3e9; --warn:#946200; --warn-soft:#fbf1d9; --bad:#b0302b; --bad-soft:#f9e3e1;
+  --code-bg:#1c252e; --code-fg:#e3e9ee;
+  --f-sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#11171c; --surface:#172028; --sunken:#1d2831; --line:#2c3a45;
+  --fg:#e4eaef; --muted:#9aa8b4;
+  --accent:#4fb8c0; --accent-soft:#16343a;
+  --dr:#7fb0ea; --cr:#e2a46c;
+  --ok:#5fc68b; --ok-soft:#173326; --warn:#e3b54a; --warn-soft:#352a12; --bad:#ef7d75; --bad-soft:#3a1d1b;
+  --code-bg:#0b1014; --code-fg:#dbe3ea; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#11171c; --surface:#172028; --sunken:#1d2831; --line:#2c3a45;
+  --fg:#e4eaef; --muted:#9aa8b4;
+  --accent:#4fb8c0; --accent-soft:#16343a;
+  --dr:#7fb0ea; --cr:#e2a46c;
+  --ok:#5fc68b; --ok-soft:#173326; --warn:#e3b54a; --warn-soft:#352a12; --bad:#ef7d75; --bad-soft:#3a1d1b;
+  --code-bg:#0b1014; --code-fg:#dbe3ea; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-sans);font-size:15px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+a{color:var(--accent)}
+code,.mono{font-family:var(--f-mono);font-size:.88em}
+p code,td code,li code{background:var(--sunken);padding:.05em .35em;border-radius:4px}
+h1,h2,h3{text-wrap:balance;line-height:1.25;margin:0}
+h1{font-size:clamp(1.7rem,3.6vw,2.4rem);font-weight:700;letter-spacing:-.01em}
+h2{font-size:1.35rem;font-weight:600;display:flex;gap:.6rem;align-items:baseline}
+h2 .n{font-family:var(--f-mono);font-size:.85rem;color:var(--accent);font-weight:500}
+h3{font-size:1.02rem;font-weight:600;margin-top:.4rem}
+p{margin:0;max-width:68ch}
+
+.wrap{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:220px minmax(0,1fr);gap:48px;padding-block:40px 80px}
+@media (max-width:900px){.wrap{grid-template-columns:minmax(0,1fr);gap:24px;padding-block:24px 56px}}
+
+nav.toc{position:sticky;top:calc(env(safe-area-inset-top,0px) + 24px);align-self:start;font-size:.88rem}
+nav.toc .label{text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;color:var(--muted);margin-bottom:.6rem}
+nav.toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;border-left:1px solid var(--line)}
+nav.toc a{display:flex;gap:.55rem;padding:.25rem .75rem;color:var(--muted);text-decoration:none;border-left:2px solid transparent;margin-left:-1px}
+nav.toc a span{font-family:var(--f-mono);font-size:.78rem;min-width:1.2rem}
+nav.toc a:hover,nav.toc a.on{color:var(--fg);border-left-color:var(--accent)}
+nav.toc a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:900px){nav.toc{position:static}nav.toc ol{grid-template-columns:repeat(auto-fill,minmax(160px,1fr));border-left:0}nav.toc a{border-left:0;padding:.2rem 0}}
+
+main{display:grid;gap:56px;min-width:0}
+section{display:grid;gap:16px;min-width:0;scroll-margin-top:24px}
+
+header.hero{display:grid;gap:14px;padding-bottom:28px;border-bottom:1px solid var(--line)}
+.eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.74rem;color:var(--accent);font-weight:600}
+.lede{font-size:1.05rem;color:var(--muted);max-width:66ch}
+.facts{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:.84rem;color:var(--muted)}
+.facts b{color:var(--fg);font-weight:500;font-family:var(--f-mono);font-size:.82rem}
+
+/* flow */
+.flow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+@media (max-width:1000px){.flow{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:520px){.flow{grid-template-columns:minmax(0,1fr)}}
+.step{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px;display:grid;gap:6px;align-content:start;position:relative}
+.step .where{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.step .what{font-weight:600}
+.step ul{margin:0;padding-left:1rem;font-size:.85rem;color:var(--muted)}
+.step.sap{border-color:var(--accent);background:var(--accent-soft)}
+.step .tag{font-family:var(--f-mono);font-size:.74rem;color:var(--accent)}
+
+/* ledger */
+.ledger{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+@media (max-width:760px){.ledger{grid-template-columns:minmax(0,1fr)}}
+.taccount{background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.taccount .head{padding:10px 12px;border-bottom:2px solid var(--fg);display:flex;justify-content:space-between;gap:8px;font-weight:600;font-size:.9rem}
+.taccount .head small{font-family:var(--f-mono);color:var(--muted);font-weight:400}
+.taccount .cols{display:grid;grid-template-columns:1fr 1fr}
+.taccount .cols>div{padding:10px 12px;min-height:64px;font-family:var(--f-mono);font-size:.84rem;font-variant-numeric:tabular-nums}
+.taccount .cols>div:first-child{border-right:2px solid var(--fg)}
+.taccount .side{font-family:var(--f-sans);font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:block;margin-bottom:4px}
+.dr{color:var(--dr)} .cr{color:var(--cr)}
+.strike{text-decoration:line-through;color:var(--muted)}
+
+/* tables & code */
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600;background:var(--sunken)}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;font-family:var(--f-mono);white-space:nowrap}
+.code{position:relative;background:var(--code-bg);color:var(--code-fg);border-radius:8px;min-width:0}
+.code pre{margin:0;padding:16px 18px;overflow-x:auto;font-family:var(--f-mono);font-size:.82rem;line-height:1.55}
+.code .lang{position:absolute;top:8px;left:14px;font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:#8fa0ad}
+.code .lang+pre{padding-top:28px}
+.copy{position:absolute;top:8px;right:8px;font:500 .72rem var(--f-sans);color:var(--code-fg);background:transparent;border:1px solid #3c4a55;border-radius:5px;padding:3px 9px;cursor:pointer}
+.copy:hover{border-color:#6c7d8a}.copy:focus-visible{outline:2px solid var(--accent)}
+.k{color:#8ec9ff}.s{color:#b9e3a0}.c{color:#7d8d99}
+
+/* pills, callouts */
+.pill{display:inline-block;font-family:var(--f-mono);font-size:.74rem;padding:1px 8px;border-radius:999px;white-space:nowrap;font-weight:500}
+.p-ok{background:var(--ok-soft);color:var(--ok)} .p-warn{background:var(--warn-soft);color:var(--warn)}
+.p-bad{background:var(--bad-soft);color:var(--bad)} .p-info{background:var(--accent-soft);color:var(--accent)}
+.p-mute{background:var(--sunken);color:var(--muted)}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 8px 8px 0;max-width:80ch}
+.note.warn{border-color:var(--warn);background:var(--warn-soft)}
+.note.bad{border-color:var(--bad);background:var(--bad-soft)}
+.note b{font-weight:600}
+
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:760px){.grid2{grid-template-columns:minmax(0,1fr)}}
+.grid2>*{min-width:0}
+
+ol.steps{margin:0;padding-left:1.3rem;display:grid;gap:6px;max-width:75ch}
+ol.steps li::marker{color:var(--accent);font-family:var(--f-mono);font-size:.85em}
+
+/* run cards */
+.runs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+@media (max-width:860px){.runs{grid-template-columns:minmax(0,1fr)}}
+.run{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;display:grid;gap:12px;align-content:start;min-width:0}
+.run .top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+.run .doc{font-family:var(--f-mono);font-size:1.5rem;font-weight:500;letter-spacing:.01em}
+.run dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;margin:0;font-size:.86rem}
+.run dt{color:var(--muted)} .run dd{margin:0;font-family:var(--f-mono);font-size:.82rem;overflow-wrap:anywhere}
+.timeline{display:grid;gap:8px;font-size:.85rem}
+.timeline div{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start}
+
+footer{color:var(--muted);font-size:.8rem;border-top:1px solid var(--line);padding-top:16px}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
+</style>
+
+<div class="wrap">
+  <nav class="toc" aria-label="Sections">
+    <div class="label">Process guide</div>
+    <ol>
+      <li><a href="#what"><span>1</span>What it does</a></li>
+      <li><a href="#architecture"><span>2</span>Architecture</a></li>
+      <li><a href="#run"><span>3</span>How to run</a></li>
+      <li><a href="#input"><span>4</span>Input</a></li>
+      <li><a href="#validation"><span>5</span>Validation</a></li>
+      <li><a href="#sap-logic"><span>6</span>SAP posting logic</a></li>
+      <li><a href="#output"><span>7</span>Output</a></li>
+      <li><a href="#db"><span>8</span>Database write-back</a></li>
+      <li><a href="#live"><span>9</span>Live postings</a></li>
+      <li><a href="#trouble"><span>10</span>Troubleshooting</a></li>
+      <li><a href="#open"><span>11</span>Open points</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">DataTwin · SAP FI · Accounts receivable</div>
+      <h1>Bank Posting with Clearing</h1>
+      <p class="lede">A bank receipt is posted in SAP and the matching customer invoice is cleared in the same step, through one API call. This replaces the manual SAP GUI program <code>ZFI_BANK_PROGRAM</code> (F-30 batch input from an Excel file).</p>
+      <div class="facts">
+        <span>Endpoint <b>POST /api/bank/post</b></span>
+        <span>SAP function <b>Z_BANK_POST_CLEAR</b></span>
+        <span>System <b>A4H / client 200</b></span>
+        <span>Transaction logic <b>FB05 · EINGZAHL</b></span>
+      </div>
+    </header>
+
+    <!-- 1 -->
+    <section id="what">
+      <h2><span class="n">01</span>What it does</h2>
+      <p>For each bank receipt (one Excel row or one JSON item), the API runs this sequence:</p>
+      <ol class="steps">
+        <li>Reads and cleans the data: dates, amounts and customer numbers.</li>
+        <li>Validates the data.</li>
+        <li>Checks that the invoice is an <b>open item</b> in live SAP.</li>
+        <li>Posts the receipt and <b>clears the invoice</b> in one SAP document.</li>
+        <li>Returns the posting document and the clearing document.</li>
+        <li>Writes the SAP document number back to <code>active_bt3i</code> / <code>active_bs</code> (<code>documentid</code>).</li>
+      </ol>
+      <h3>The accounting entry</h3>
+      <div class="ledger">
+        <div class="taccount">
+          <div class="head">Bank G/L <small>24500000</small></div>
+          <div class="cols"><div><span class="side">Debit</span><span class="dr">10,000.00</span><br><small class="mono">key 40</small></div><div><span class="side">Credit</span></div></div>
+        </div>
+        <div class="taccount">
+          <div class="head">Customer <small>0030000001</small></div>
+          <div class="cols"><div><span class="side">Debit</span><span class="strike">10,000.00</span><br><small>invoice 1800000001</small></div><div><span class="side">Credit</span><span class="cr">10,000.00</span><br><small>payment, key 15</small></div></div>
+        </div>
+        <div class="taccount">
+          <div class="head">Result <small>BSID → BSAD</small></div>
+          <div class="cols"><div><span class="side">Open</span><span class="mono">0.00</span></div><div><span class="side">Cleared by</span><span class="mono">1900000004</span></div></div>
+        </div>
+      </div>
+      <p>The invoice and the payment line both get the same clearing document (<code>AUGBL</code>) and move from open items (BSID) to cleared items (BSAD). The posting document is the clearing document.</p>
+    </section>
+
+    <!-- 2 -->
+    <section id="architecture">
+      <h2><span class="n">02</span>Architecture</h2>
+      <div class="flow" role="list">
+        <div class="step" role="listitem"><div class="where">Caller</div><div class="what">Request</div><ul><li>DataTwin, Postman or a script</li><li><code>file_path</code> or <code>items[]</code></li></ul></div>
+        <div class="step" role="listitem"><div class="where">Python · posting.py</div><div class="what">Prepare</div><ul><li>Read Excel / JSON</li><li>Normalise</li><li>Validate</li></ul></div>
+        <div class="step" role="listitem"><div class="where">SAP · read</div><div class="what">Open-item check</div><ul><li>BSID via <code>ZGENERIC_DATA_SRV</code></li><li>Amount and currency</li></ul></div>
+        <div class="step sap" role="listitem"><div class="where">SAP · post</div><div class="what">Post + clear</div><span class="tag">/sap/bc/soap/rfc</span><ul><li><code>Z_BANK_POST_CLEAR</code></li><li><code>POSTING_INTERFACE_CLEARING</code></li></ul></div>
+        <div class="step" role="listitem"><div class="where">PostgreSQL · document_link.py</div><div class="what">Write-back</div><ul><li><code>active_bt3i.documentid</code></li><li><code>active_bs.documentid</code></li></ul></div>
+      </div>
+      <div class="grid2">
+        <div class="tbl"><table>
+          <thead><tr><th>Component</th><th>Location</th></tr></thead>
+          <tbody>
+            <tr><td>Main logic</td><td><code>bank_posting/posting.py</code></td></tr>
+            <tr><td>DB write-back</td><td><code>bank_posting/document_link.py</code></td></tr>
+            <tr><td>Standalone API server</td><td><code>bank_posting/server.py</code> · port 8001</td></tr>
+            <tr><td>Same endpoint, main API</td><td><code>api.py</code> · port 8000</td></tr>
+            <tr><td>SAP function source</td><td><code>bank_posting/sap_abap/Z_BANK_POST_CLEAR.abap</code></td></tr>
+            <tr><td>Settings</td><td><code>config.ini</code> → <code>[sap]</code>, <code>[bank_posting]</code></td></tr>
+          </tbody>
+        </table></div>
+        <div class="tbl"><table>
+          <thead><tr><th>SAP object</th><th>Name</th><th>Package</th></tr></thead>
+          <tbody>
+            <tr><td>Function group</td><td><code>ZBANK_POST</code></td><td><span class="pill p-warn">$TMP</span></td></tr>
+            <tr><td>Function module, RFC-enabled</td><td><code>Z_BANK_POST_CLEAR</code></td><td><span class="pill p-warn">$TMP</span></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+      <div class="note"><b>Why SOAP-RFC and not OData.</b> The standard posting and clearing OData services (<code>FAR_PAYMENT_POST_SRV</code>, <code>FAR_MANUAL_CLEARING_SRV</code>) return "No System Alias" in this system, and the API user cannot create SEGW projects. An RFC-enabled function module behind SAP's built-in <code>/sap/bc/soap/rfc</code> endpoint needs no service registration.</div>
+    </section>
+
+    <!-- 3 -->
+    <section id="run">
+      <h2><span class="n">03</span>How to run</h2>
+      <div class="code"><span class="lang">shell · from C:\SAP</span><button class="copy" type="button">Copy</button><pre><span class="c"># standalone server</span>
+python bank_posting\server.py --port 8001
+
+<span class="c"># or the main API (port 8000)</span>
+python api.py
+
+<span class="c"># CLI dry run</span>
+python -m bank_posting.posting "C:\SAP\log\BANK EXCEL SHEET.xlsx" --dry-run</pre></div>
+      <div class="note"><b>Always send <code>"dry_run": true</code> first.</b> A dry run validates the data and checks open items in SAP without posting anything.</div>
+    </section>
+
+    <!-- 4 -->
+    <section id="input">
+      <h2><span class="n">04</span>Input</h2>
+      <h3>Request · <code>POST /api/bank/post</code></h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Field</th><th>Required</th><th>Default</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>file_path</code></td><td>one of</td><td>–</td><td>Excel path <b>on the API server machine</b></td></tr>
+          <tr><td><code>items</code></td><td>one of</td><td>–</td><td>List of receipts as JSON, instead of a file</td></tr>
+          <tr><td><code>sheet</code></td><td>–</td><td>first sheet</td><td>Excel sheet name</td></tr>
+          <tr><td><code>dry_run</code></td><td>–</td><td><code>false</code></td><td><code>true</code> validates only; nothing is posted</td></tr>
+          <tr><td><code>match_by</code></td><td>–</td><td><code>XBLNR</code></td><td>How SAP finds the invoice: <code>XBLNR</code> reference, <code>ZUONR</code> assignment, <code>BELNR</code> document number</td></tr>
+          <tr><td><code>check_open_items</code></td><td>–</td><td><code>true</code></td><td>Check the invoice in live SAP before posting</td></tr>
+          <tr><td><code>update_db</code></td><td>–</td><td><code>true</code></td><td>Write the document number back to PostgreSQL</td></tr>
+        </tbody>
+      </table></div>
+
+      <div class="grid2">
+        <div class="code"><span class="lang">json · one item</span><button class="copy" type="button">Copy</button><pre>{
+  <span class="k">"dry_run"</span>: true,
+  <span class="k">"match_by"</span>: <span class="s">"XBLNR"</span>,
+  <span class="k">"items"</span>: [{
+    <span class="k">"doc_date"</span>: <span class="s">"2026-11-15"</span>,
+    <span class="k">"posting_date"</span>: <span class="s">"2026-11-15"</span>,
+    <span class="k">"company_code"</span>: <span class="s">"DAT1"</span>,
+    <span class="k">"currency"</span>: <span class="s">"INR"</span>,
+    <span class="k">"customer"</span>: <span class="s">"30000001"</span>,
+    <span class="k">"bank_gl"</span>: <span class="s">"24500000"</span>,
+    <span class="k">"amount"</span>: 1858500.00,
+    <span class="k">"invoice_ref"</span>: <span class="s">"0090000057"</span>,
+    <span class="k">"utr"</span>: <span class="s">"DTUTR2026111501"</span>,
+    <span class="k">"item_text"</span>: <span class="s">"Bank receipt"</span>
+  }]
+}</pre></div>
+        <div class="tbl"><table>
+          <thead><tr><th>Item field</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>customer</code>, <code>bank_gl</code></td><td>Numbers are zero-padded: <code>30000001</code> → <code>0030000001</code></td></tr>
+            <tr><td><code>amount</code></td><td>Number. <code>8,250.50</code>, <code>8250,50</code> and <code>8.250,50</code> are also accepted.</td></tr>
+            <tr><td><code>invoice_ref</code></td><td>Value searched in the <code>match_by</code> field</td></tr>
+            <tr><td><code>utr</code></td><td>Header reference and duplicate check. Always send it.</td></tr>
+            <tr><td><code>doc_type</code></td><td>Default <code>DZ</code></td></tr>
+            <tr><td><code>value_date</code></td><td>Only if the bank G/L shows the value-date field; otherwise SAP fails with <code>BSEG-VALUT does not exist</code></td></tr>
+          </tbody>
+        </table></div>
+      </div>
+
+      <h3>Excel layout</h3>
+      <p>Same layout as the old <code>ZFI_BANK_PROGRAM</code>. Row 1 holds the headers; data starts at row 2. Note rows under the data come back as <span class="pill p-bad">INVALID</span>, so remove them.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Header</th><th>Used as</th><th>Header</th><th>Used as</th></tr></thead>
+        <tbody>
+          <tr><td><code>BLDAT</code></td><td>Document date</td><td><code>NEWBS_1</code></td><td>Customer posting key</td></tr>
+          <tr><td><code>BLART</code></td><td>Document type</td><td><code>NEWKO_1</code></td><td><b>Customer</b></td></tr>
+          <tr><td><code>BUKRS</code></td><td>Company code</td><td><code>WRBTR_1</code></td><td>Customer amount</td></tr>
+          <tr><td><code>BUDAT</code></td><td>Posting date</td><td><code>ZUONR_1</code></td><td><b>Invoice reference</b></td></tr>
+          <tr><td><code>MONAT</code></td><td>Period</td><td><code>NEWBS_2</code></td><td>Must be 40</td></tr>
+          <tr><td><code>WAERS</code></td><td>Currency</td><td><code>NEWKO_2</code></td><td><b>Bank G/L</b></td></tr>
+          <tr><td><code>ZFBDT</code></td><td><span class="pill p-mute">ignored</span></td><td><code>WRBTR_2</code></td><td><b>Bank amount</b></td></tr>
+          <tr><td><code>SGTXT_1</code></td><td><span class="pill p-mute">ignored</span></td><td><code>SGTXT_2</code></td><td>Item text</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- 5 -->
+    <section id="validation">
+      <h2><span class="n">05</span>Validation</h2>
+      <h3>Python, before SAP is called</h3>
+      <div class="tbl"><table>
+        <thead><tr><th>Check</th><th>Error example</th></tr></thead>
+        <tbody>
+          <tr><td>Dates valid</td><td><code>Invalid/missing document date: 'posting date bank'</code></td></tr>
+          <tr><td>Company code (4 chars), currency (3 letters)</td><td><code>Invalid company code: 'STATIC'</code></td></tr>
+          <tr><td>Customer, bank G/L, invoice ref present</td><td><code>Invoice reference is missing - nothing to clear</code></td></tr>
+          <tr><td>Amount above 0 and readable</td><td><code>Invalid bank amount: 'Bank Amount'</code></td></tr>
+          <tr><td>Customer amount = bank amount (Excel)</td><td><code>Customer amount 8250.50 != bank amount … (Dr must equal Cr)</code></td></tr>
+          <tr><td>Bank posting key = 40</td><td><code>Bank line posting key must be 40</code></td></tr>
+          <tr><td>No duplicate row in the batch</td><td><code>Duplicate row in this batch …</code></td></tr>
+          <tr><td><b>Open item exists in SAP</b></td><td><code>No open item in SAP for company 2024, customer CUST02 …</code></td></tr>
+          <tr><td>Currency matches the open item</td><td><code>Currency mismatch: bank EUR vs open item INR</code></td></tr>
+          <tr><td><b>Amount = open amount</b></td><td><code>Amount mismatch: bank 1000000.00 vs open item(s) 188800.00</code></td></tr>
+        </tbody>
+      </table></div>
+      <div class="note warn"><b>Exact amounts only.</b> Partial payments, residual items and bank charges are not handled yet.</div>
+      <h3>SAP, inside <code>Z_BANK_POST_CLEAR</code></h3>
+      <ol class="steps">
+        <li><b>Duplicate UTR.</b> A non-reversed document with the same document type and UTR rejects the row.</li>
+        <li><b>Open item.</b> The invoice must still be in <code>BSID_VIEW</code>.</li>
+        <li><b>FI checks.</b> Standard FB05 checks: period open, account valid, balance zero, field status, authorisation.</li>
+        <li><b>Clearing confirmation.</b> After posting, <code>BSAD_VIEW</code> must show the invoice cleared by the new document.</li>
+      </ol>
+    </section>
+
+    <!-- 6 -->
+    <section id="sap-logic">
+      <h2><span class="n">06</span>SAP posting logic</h2>
+      <div class="code"><span class="lang">abap · Z_BANK_POST_CLEAR</span><pre><span class="k">POSTING_INTERFACE_START</span>     call transaction, mode N, synchronous update
+<span class="k">POSTING_INTERFACE_CLEARING</span>  procedure EINGZAHL (incoming payment), tcode FB05
+   header : BLDAT, BUDAT, BLART, BUKRS, WAERS, XBLNR (UTR or invoice ref), MONAT
+   line   : key 40, bank G/L, amount, assignment, text [, value date]
+   clear  : account type D, customer, company code,
+            select by XBLNR | ZUONR | BELNR = invoice ref
+<span class="k">POSTING_INTERFACE_END</span>
+<span class="c">→ posted document from T_BLNTAB, then clearing document from BSAD_VIEW</span></pre></div>
+      <div class="tbl"><table>
+        <thead><tr><th>EV_STATUS</th><th>API status</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>S</code></td><td><span class="pill p-ok">SUCCESS</span></td><td>Posted and invoice cleared</td></tr>
+          <tr><td><code>W</code></td><td><span class="pill p-warn">POSTED_NOT_CLEARED</span></td><td>Document posted but clearing not found. Check FBL5N.</td></tr>
+          <tr><td><code>E</code></td><td><span class="pill p-bad">ERROR</span></td><td>Nothing posted. The reason is in <code>message</code>.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- 7 -->
+    <section id="output">
+      <h2><span class="n">07</span>Output</h2>
+      <div class="grid2">
+        <div class="code"><span class="lang">json · response</span><button class="copy" type="button">Copy</button><pre>{
+  <span class="k">"status"</span>: <span class="s">"completed"</span>,
+  <span class="k">"batch_id"</span>: <span class="s">"BNK20261115131441-28F7"</span>,
+  <span class="k">"dry_run"</span>: false,
+  <span class="k">"summary"</span>: {<span class="k">"SUCCESS"</span>: 1},
+  <span class="k">"db_update"</span>: {<span class="k">"invoices_updated"</span>: 0, <span class="k">"bank_updated"</span>: 0},
+  <span class="k">"results"</span>: [{
+    <span class="k">"row"</span>: 1,
+    <span class="k">"status"</span>: <span class="s">"SUCCESS"</span>,
+    <span class="k">"company_code"</span>: <span class="s">"DAT1"</span>,
+    <span class="k">"customer"</span>: <span class="s">"0030000001"</span>,
+    <span class="k">"invoice_ref"</span>: <span class="s">"0090000057"</span>,
+    <span class="k">"amount"</span>: 1858500.0,
+    <span class="k">"document_no"</span>: <span class="s">"1900000003"</span>,
+    <span class="k">"clearing_doc"</span>: <span class="s">"1900000003"</span>,
+    <span class="k">"clearing_date"</span>: <span class="s">"2026-11-15"</span>,
+    <span class="k">"message"</span>: <span class="s">"Document 1900000003 posted and cleared …"</span>
+  }]
+}</pre></div>
+        <div class="tbl"><table>
+          <thead><tr><th>Row status</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><span class="pill p-info">VALID</span> <span class="pill p-bad">INVALID</span></td><td>Dry-run result</td></tr>
+            <tr><td><span class="pill p-ok">SUCCESS</span></td><td>Posted and cleared</td></tr>
+            <tr><td><span class="pill p-warn">POSTED_NOT_CLEARED</span></td><td>Posted, clearing not confirmed</td></tr>
+            <tr><td><span class="pill p-bad">ERROR</span></td><td>SAP rejected the row</td></tr>
+            <tr><td><span class="pill p-mute">NOT_POSTED</span></td><td>SAP function not reachable</td></tr>
+          </tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- 8 -->
+    <section id="db">
+      <h2><span class="n">08</span>Database write-back</h2>
+      <p><code>document_link.py</code> uses the same matching rules as the AR Inbox <code>connect_document_id</code> flow. It runs only for rows with <span class="pill p-ok">SUCCESS</span> or <span class="pill p-warn">POSTED_NOT_CLEARED</span>.</p>
+      <div class="tbl"><table>
+        <thead><tr><th>Table</th><th>Filter</th><th>Match</th><th>Set</th></tr></thead>
+        <tbody>
+          <tr><td><code>active_bt3i</code></td><td><code>transactiontype = 'Invoice'</code><br><code>documentid IS NULL</code></td><td><code>documentnumber</code> = invoice_ref</td><td><code>documentid</code> = SAP document</td></tr>
+          <tr><td><code>active_bs</code></td><td><code>transactiontype = 'Bank'</code><br><code>documentid IS NULL</code></td><td><code>transactionref</code> = invoice_ref or UTR</td><td><code>documentid</code> = SAP document</td></tr>
+        </tbody>
+      </table></div>
+      <ul class="steps" style="margin:0;padding-left:1.2rem;display:grid;gap:6px;max-width:75ch">
+        <li>Only <code>documentid</code> is updated, by primary key. Existing values are never overwritten.</li>
+        <li>Both tables update in one database transaction.</li>
+      </ul>
+      <div class="note warn"><b>Limitation.</b> Invoices from the SAP sync (<code>source_table = 'active_bsid'</code>) already hold the invoice BELNR in <code>documentid</code>, so they are skipped. That is why the first live posting updated 0 rows. Recommended fix: separate <code>clearing_doc</code> / <code>clearing_date</code> columns.</div>
+    </section>
+
+    <!-- 9 -->
+    <section id="live">
+      <h2><span class="n">09</span>Live postings · 2026-11-15</h2>
+      <div class="runs">
+        <article class="run">
+          <div class="top"><div class="doc">1900000003</div><span class="pill p-ok">posted · cleared</span></div>
+          <dl>
+            <dt>Company</dt><dd>DAT1 · customer 0030000001</dd>
+            <dt>Invoice</dt><dd>4800000007 · XBLNR 0090000057</dd>
+            <dt>Amount</dt><dd>1,858,500.00 INR</dd>
+            <dt>Bank G/L</dt><dd>24500000 (from DZ receipts 1900000000–02)</dd>
+            <dt>UTR</dt><dd>DTUTR2026111501</dd>
+            <dt>Cleared</dt><dd>2026-11-15 · invoice no longer in BSID</dd>
+            <dt>DB update</dt><dd>0 rows (SAP-sourced invoice, see section 8)</dd>
+          </dl>
+          <div class="timeline">
+            <div><span class="pill p-bad">attempt 1</span><span><code>Field BSEG-VALUT does not exist in dynpro SAPMF05A 0300</code>. Nothing posted. Fixed: value date sent only when given.</span></div>
+            <div><span class="pill p-ok">attempt 2</span><span>Posted and cleared.</span></div>
+          </div>
+        </article>
+        <article class="run">
+          <div class="top"><div class="doc">1900000004</div><span class="pill p-bad">wrong customer · reverse</span></div>
+          <dl>
+            <dt>Invoice</dt><dd>1800000001 · 10,000 INR · WPP MEDIA (active_bt3i)</dd>
+            <dt>Bank receipt</dt><dd>FHDFCH01086920901 · 13-11-2026 · credit 40,000</dd>
+            <dt>match_by</dt><dd>BELNR</dd>
+            <dt>Cleared</dt><dd>2026-11-13</dd>
+            <dt>DB update</dt><dd>active_bt3i 1 row · active_bs 1 row → 1900000004</dd>
+          </dl>
+          <div class="timeline">
+            <div><span class="pill p-bad">attempt 1</span><span>BELNR padded to 20 characters (<code>00000000001800000001</code>). Nothing posted. FM fixed and re-activated.</span></div>
+            <div><span class="pill p-ok">attempt 2</span><span>Posted, cleared, both tables updated.</span></div>
+          </div>
+          <div class="note bad"><b>Coincidental match.</b> SAP customer 0030000001 is "TEST Customer_02", not WPP MEDIA, and the DB invoice is not from SAP (<code>source_table</code> NULL). Reverse 1900000004 and reset both <code>documentid</code> values.</div>
+        </article>
+      </div>
+      <p>The 40,000 receipt also covers JM3304800001 and JM3304800002 (15,000 each). They are not open in SAP, so only 10,000 was posted, and the UTR is now used, so the duplicate check rejects further postings with it.</p>
+      <div class="note"><b>Reversing a test posting.</b> In SAP run <b>FBRA</b> (reset cleared items), then <b>FB08</b> (reverse), for the document / DAT1 / 2026.</div>
+    </section>
+
+    <!-- 10 -->
+    <section id="trouble">
+      <h2><span class="n">10</span>Troubleshooting</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Message</th><th>Cause and fix</th></tr></thead>
+        <tbody>
+          <tr><td><code>No open item in SAP …</code></td><td>Wrong customer, company code or reference, or <code>match_by</code> points to the wrong field. Check FBL5N.</td></tr>
+          <tr><td><code>Amount mismatch …</code></td><td>The bank amount must equal the open amount.</td></tr>
+          <tr><td><code>Field BSEG-VALUT does not exist …</code></td><td>Don't send <code>value_date</code> for this bank G/L.</td></tr>
+          <tr><td><code>Field BSEG-HKONT does not exist …</code></td><td>In the function module, change <code>BSEG-HKONT</code> to <code>RF05A-NEWKO</code>.</td></tr>
+          <tr><td><code>Posting period … is not open</code></td><td>Open the period in OB52.</td></tr>
+          <tr><td><code>UTR … already posted in document …</code></td><td>Duplicate: the receipt is already in SAP.</td></tr>
+          <tr><td><code>SAP function Z_BANK_POST_CLEAR not available</code></td><td>Function inactive or missing, <code>/sap/bc/soap/rfc</code> disabled, or no <code>S_RFC</code> authorisation.</td></tr>
+          <tr><td><code>Excel file not found on API server</code></td><td><code>file_path</code> must exist on the machine running the API.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <!-- 11 -->
+    <section id="open">
+      <h2><span class="n">11</span>Open points</h2>
+      <div class="tbl"><table>
+        <thead><tr><th>Item</th><th>Status</th><th>Next step</th></tr></thead>
+        <tbody>
+          <tr><td>Transport</td><td><span class="pill p-warn">$TMP</span></td><td>Move the SAP objects to a Z package with a transport before QA/PRD.</td></tr>
+          <tr><td>DB write-back for SAP invoices</td><td><span class="pill p-warn">decision</span></td><td>Add <code>clearing_doc</code> / <code>clearing_date</code> columns (recommended) or overwrite <code>documentid</code>.</td></tr>
+          <tr><td>Customer check</td><td><span class="pill p-bad">missing</span></td><td>Compare the SAP customer name (KNA1) with <code>sendername</code> before posting.</td></tr>
+          <tr><td>Bank G/L per company code</td><td><span class="pill p-warn">confirm</span></td><td>Confirm with FI. Only DAT1 → 24500000 is used so far.</td></tr>
+          <tr><td>Partial payment, residuals, bank charges</td><td><span class="pill p-mute">not built</span></td><td>Residual items and difference posting in the function module.</td></tr>
+          <tr><td>Authorisation</td><td><span class="pill p-warn">production</span></td><td>Dedicated technical user with <code>S_RFC</code> (ZBANK_POST), FB05, <code>F_BKPF_*</code>.</td></tr>
+        </tbody>
+      </table></div>
+    </section>
+
+    <footer>Source: bank_posting/BANK_POSTING_PROCESS.md · details on clearing and table updates in CLEARING_AND_DB_UPDATE.md</footer>
+  </main>
+</div>
+
+<script>
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    var pre=btn.parentElement.querySelector('pre'), text=pre.innerText;
+    function done(msg){btn.textContent=msg;setTimeout(function(){btn.textContent='Copy'},1400)}
+    function fallback(){var r=document.createRange();r.selectNodeContents(pre);var s=getSelection();s.removeAllRanges();s.addRange(r);done('Selected')}
+    try{navigator.clipboard.writeText(text).then(function(){done('Copied')},fallback)}catch(e){fallback()}
+  });
+});
+(function(){
+  var links=[].slice.call(document.querySelectorAll('nav.toc a'));
+  if(!('IntersectionObserver' in window))return;
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){links.forEach(function(l){l.classList.toggle('on',l.getAttribute('href')==='#'+e.target.id)})}})},{rootMargin:'-20% 0px -70% 0px'});
+  document.querySelectorAll('main section[id]').forEach(function(s){io.observe(s)});
+})();
+</script>

@@ -1,0 +1,17 @@
+# Whitelist: only the bank posting module and what it needs is tracked.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/config.example.ini
+!/logger_setup.py
+!/db_manager.py
+!/sap_odata_extractor.py
+!/bank_posting/
+
+# never commit
+config.ini
+.env
+__pycache__/
+*.pyc
+log/

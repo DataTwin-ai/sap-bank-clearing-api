@@ -10,17 +10,20 @@ Endpoints:
     GET  /                -> Redirect to Swagger UI (/docs)
     GET  /health          -> Service health check
     POST /api/bank/post   -> Post bank receipt with SAP invoice clearing
+    POST /api/bank/upload -> Same, with the Excel file uploaded from the client
     GET  /docs            -> Interactive Swagger UI documentation
     GET  /redoc           -> ReDoc documentation
 """
 
 import argparse
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, File, Form, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
@@ -38,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from bank_posting.posting import logger, process_bank_posting  # noqa: E402
+from bank_posting.posting import data_dir, logger, process_bank_posting  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +109,10 @@ class BankPostingItem(BaseModel):
 class BankPostingRequest(BaseModel):
     file_path: Optional[str] = Field(
         default=None,
-        description="Absolute or relative path to Excel file on server",
+        description=(
+            "Path to the Excel file. If the path does not exist on the server, a file with the "
+            "same name in the server data folder is used (e.g. C:\SAP\log\BANK.xlsx -> data/BANK.xlsx)."
+        ),
         example="data/BANK EXCEL SHEET.xlsx" if not PYDANTIC_V2 else None,
     )
     sheet: Optional[str] = Field(
@@ -322,6 +328,58 @@ async def bank_post(payload: BankPostingRequest):
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": str(e)})
     except Exception as e:
         logger.error(f"Bank posting failed: {e}")
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": str(e)})
+
+
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
+
+
+@app.post(
+    "/api/bank/upload",
+    response_model=BankPostingResponse,
+    responses={
+        200: {"description": "Posting and validation results"},
+        400: {"model": ErrorResponse, "description": "Validation or file error"},
+        500: {"model": ErrorResponse, "description": "Server or SAP error"},
+    },
+    tags=["Bank Posting"],
+    summary="Upload Excel, Validate, Post and Update DB",
+    description=(
+        "Upload the bank Excel file (17 columns, same as ZFI_BANK_PROGRAM). The file is saved in the "
+        "server data folder, validated against live SAP open items, posted + cleared via "
+        "`Z_BANK_POST_CLEAR` and the SAP document numbers are written to the database. "
+        "Set `dry_run=true` to validate only."
+    ),
+)
+async def bank_upload(
+    file: UploadFile = File(..., description="Excel file (.xlsx)"),
+    sheet: Optional[str] = Form(None, description="Sheet name (default: first sheet)"),
+    dry_run: bool = Form(False, description="true = validate only, no SAP posting / DB update"),
+    match_by: str = Form("XBLNR", description="XBLNR | ZUONR | BELNR"),
+    update_db: bool = Form(True, description="Write SAP document numbers to active_bt3i / active_bs"),
+):
+    name = _SAFE_NAME.sub("_", Path(file.filename or "upload.xlsx").name)
+    if not name.lower().endswith((".xlsx", ".xlsm")):
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content={"status": "error", "message": "Only .xlsx / .xlsm files are supported"})
+    folder = data_dir() / "uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
+    target.write_bytes(await file.read())
+    logger.info(f"[BANK UPLOAD] saved {target}")
+    try:
+        return await run_in_threadpool(
+            process_bank_posting,
+            file_path=str(target),
+            sheet=sheet or None,
+            dry_run=dry_run,
+            match_by=match_by,
+            update_db=update_db,
+        )
+    except (ValueError, FileNotFoundError) as e:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": str(e)})
+    except Exception as e:
+        logger.error(f"Bank upload posting failed: {e}")
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": str(e)})
 
 

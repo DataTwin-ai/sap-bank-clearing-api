@@ -16,11 +16,12 @@ Output : JSON with a result per row.
 """
 
 import configparser
+import os
 import re
 import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 import sys
@@ -143,15 +144,51 @@ def _text(v: Any) -> str:
 # ---------------------------------------------------------------------------
 # Input readers
 # ---------------------------------------------------------------------------
+def data_dir() -> Path:
+    """Folder for uploaded / dropped Excel files: DATA_DIR env var or ./data (cwd)."""
+    raw = os.environ.get("DATA_DIR") or "data"
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def resolve_excel_path(file_path: str) -> Path:
+    """
+    Use file_path as given if it exists on this server. Otherwise look for a file
+    with the same name in the data folder, so a client can send a Windows path
+    such as 'C:/SAP/log/BANK.xlsx' (or with backslashes) and the server
+    uses data/BANK.xlsx.
+    """
+    path = Path(file_path)
+    if path.is_file():
+        return path
+    name = PureWindowsPath(file_path).name  # splits on both back- and forward slashes
+    candidate = data_dir() / name
+    if name and candidate.is_file():
+        logger.info(f"[BANK POST] '{file_path}' not on server; using {candidate}")
+        return candidate
+    raise FileNotFoundError(
+        f"Excel file not found on API server: '{file_path}'. "
+        f"Upload it with POST /api/bank/upload or copy it to the server data folder ({data_dir()})."
+    )
+
+
 def read_excel(file_path: str, sheet: Optional[str] = None) -> List[Dict[str, Any]]:
     import openpyxl
 
-    path = Path(file_path)
-    if not path.is_file():
-        raise FileNotFoundError(f"Excel file not found on API server: {file_path}")
+    path = resolve_excel_path(file_path)
 
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    ws = wb[sheet] if sheet else wb.worksheets[0]
+    if not sheet:
+        ws = wb.worksheets[0]
+    elif sheet in wb.sheetnames:
+        ws = wb[sheet]
+    elif len(wb.sheetnames) == 1:
+        logger.warning(f"[BANK POST] sheet '{sheet}' not found; using the only sheet '{wb.sheetnames[0]}'")
+        ws = wb.worksheets[0]
+    else:
+        names = ", ".join(wb.sheetnames)
+        wb.close()
+        raise ValueError(f"Sheet '{sheet}' not found in {path.name}. Available sheets: {names}")
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
     if not rows:

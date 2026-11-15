@@ -16,6 +16,7 @@ Endpoints:
 """
 
 import argparse
+import json
 import re
 import sys
 from datetime import datetime
@@ -290,6 +291,66 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Windows paths pasted into JSON ("file_path": "sap\BANK.xlsx") are invalid JSON
+# because of the single backslashes. If a JSON body does not parse, keep the
+# escapes \\ \" \/ as they are and turn every other backslash into a literal one.
+_BACKSLASH = re.compile(r'\\([\\"/])?')
+
+
+def _escape_lone_backslashes(text: str) -> str:
+    return _BACKSLASH.sub(lambda m: m.group(0) if m.group(1) else "\\\\", text)
+
+
+class WindowsPathJSONMiddleware:
+    """ASGI middleware: repairs JSON bodies that contain unescaped Windows paths."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        if b"json" not in headers.get(b"content-type", b""):
+            return await self.app(scope, receive, send)
+
+        chunks = []
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return await self.app(scope, receive, send)  # client disconnected
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body"):
+                break
+        body = b"".join(chunks)
+
+        try:
+            json.loads(body)
+        except ValueError:
+            try:
+                fixed = _escape_lone_backslashes(body.decode("utf-8"))
+                json.loads(fixed)
+            except ValueError:
+                pass  # still invalid: let FastAPI report the original error
+            else:
+                logger.info("[REQUEST] escaped single backslashes in JSON body (Windows path)")
+                body = fixed.encode("utf-8")
+
+        sent = False
+
+        async def replay():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        return await self.app(scope, replay, send)
+
+
+app.add_middleware(WindowsPathJSONMiddleware)
 
 
 @app.get(

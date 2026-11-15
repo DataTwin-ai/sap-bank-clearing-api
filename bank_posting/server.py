@@ -141,11 +141,26 @@ class BankPostingRequest(BaseModel):
         default=None,
         description="Direct list of posting items instead of file_path",
     )
+    tenant_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Tenant. When set, file_path is read from the tenant S3 bucket: "
+            "s3://dt-<tenant_id>-<env>/<org_id>/<path without drive letter>"
+        ),
+    )
+    org_id: Optional[str] = Field(default=None, description="Organisation id (first folder of the S3 key)")
 
     if PYDANTIC_V2:
         model_config = ConfigDict(
             json_schema_extra={
                 "example": {
+                    "file_path": "C:\SAP\BANK EXCEL SHEET.xlsx",
+                    "sheet": "F-30 Upload",
+                    "tenant_id": "DM00005",
+                    "org_id": "OM0000000001",
+                    "dry_run": True,
+                },
+                "example_items": {
                     "dry_run": True,
                     "match_by": "XBLNR",
                     "check_open_items": True,
@@ -171,6 +186,13 @@ class BankPostingRequest(BaseModel):
         class Config:
             schema_extra = {
                 "example": {
+                    "file_path": "C:\SAP\BANK EXCEL SHEET.xlsx",
+                    "sheet": "F-30 Upload",
+                    "tenant_id": "DM00005",
+                    "org_id": "OM0000000001",
+                    "dry_run": True,
+                },
+                "example_items": {
                     "dry_run": True,
                     "match_by": "XBLNR",
                     "check_open_items": True,
@@ -323,6 +345,8 @@ async def bank_post(payload: BankPostingRequest):
             match_by=payload.match_by,
             check_sap_open_items=payload.check_open_items,
             update_db=bool(payload.update_db),
+            tenant_id=payload.tenant_id,
+            org_id=payload.org_id,
         )
         return res
     except (ValueError, FileNotFoundError) as e:

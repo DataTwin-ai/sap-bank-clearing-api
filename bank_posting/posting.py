@@ -79,7 +79,37 @@ def load_bank_config() -> Dict[str, str]:
         "default_doc_type": sec.get("default_doc_type", "DZ"),
         "default_match_by": sec.get("default_match_by", "XBLNR").upper(),
         "check_open_items": sec.get("check_open_items", "true").lower() in ("true", "1", "yes"),
+        # Tenant files in S3: {tenant_id} lower-cased, {suffix_s3} from the active env section
+        "s3_bucket_template": sec.get("s3_bucket_template", "dt-{tenant_id}{suffix_s3}"),
+        "s3_key_template": sec.get("s3_key_template", "{org_id}/{path}"),
     }
+
+
+def _s3_suffix() -> str:
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_PATH, encoding="utf-8")
+    env = (os.getenv("APP_ENV") or os.getenv("DB_ENV")
+           or cfg.get("environment", "current_env", fallback="development")).strip()
+    return cfg.get(env, "suffix_s3", fallback="-dev") if cfg.has_section(env) else "-dev"
+
+
+def tenant_s3_location(file_path: str, tenant_id: str, org_id: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Map a client path to the tenant's S3 object, e.g.
+    C:\SAP\BANK.xlsx + DM00005 / OM0000000001 -> (dt-dm00005-dev, OM0000000001/SAP/BANK.xlsx)
+    """
+    cfg = load_bank_config()
+    win = PureWindowsPath(file_path.strip())
+    parts = [p for p in win.parts if p not in (win.anchor, "\\", "/")]
+    rel = "/".join(parts).lstrip("/")
+    if not rel:
+        raise ValueError("file_path is empty")
+    bucket = cfg["s3_bucket_template"].format(
+        tenant_id=tenant_id.strip().lower(), org_id=(org_id or "").strip(), suffix_s3=_s3_suffix())
+    key = cfg["s3_key_template"].format(
+        tenant_id=tenant_id.strip(), org_id=(org_id or "").strip(), path=rel).lstrip("/")
+    key = re.sub(r"/{2,}", "/", key)
+    return bucket, key
 
 
 # ---------------------------------------------------------------------------
@@ -222,10 +252,16 @@ def resolve_excel_path(file_path: str) -> Path:
     )
 
 
-def read_excel(file_path: str, sheet: Optional[str] = None) -> List[Dict[str, Any]]:
+def read_excel(file_path: str, sheet: Optional[str] = None,
+               tenant_id: Optional[str] = None, org_id: Optional[str] = None) -> List[Dict[str, Any]]:
     import openpyxl
 
-    path = resolve_excel_path(file_path)
+    if tenant_id and not parse_s3_uri(file_path):
+        bucket, key = tenant_s3_location(file_path, tenant_id, org_id)
+        logger.info(f"[BANK POST] tenant {tenant_id}: '{file_path}' -> s3://{bucket}/{key}")
+        path = download_from_s3(bucket, key)
+    else:
+        path = resolve_excel_path(file_path)
 
     wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
     if not sheet:
@@ -461,6 +497,8 @@ def process_bank_posting(
     match_by: Optional[str] = None,
     check_sap_open_items: Optional[bool] = None,
     update_db: bool = True,
+    tenant_id: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cfg = load_bank_config()
     match_by = (match_by or cfg["default_match_by"]).upper()
@@ -469,7 +507,7 @@ def process_bank_posting(
     do_check = cfg["check_open_items"] if check_sap_open_items is None else check_sap_open_items
 
     if file_path:
-        raw_items = read_excel(file_path, sheet)
+        raw_items = read_excel(file_path, sheet, tenant_id=tenant_id, org_id=org_id)
     elif items:
         raw_items = [{**it, "row": it.get("row", i)} for i, it in enumerate(items, start=1)]
     else:

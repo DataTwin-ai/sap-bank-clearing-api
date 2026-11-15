@@ -1,10 +1,11 @@
 # =============================================================================
 # CodeBuild: sap-bank-clearing-api (us-east-1)
-#   1. Build the Docker image
-#   2. Push it to ECR (<account>.dkr.ecr.us-east-1.amazonaws.com/sap-bank-clearing-api)
-#   3. Deploy to EC2 via SSM Run Command (runs deploy/deploy.sh on the host)
+#   1. Check the Python sources compile
+#   2. Package the source as a tar.gz bundle and upload it to S3
+#   3. Deploy via SSM Run Command: the EC2 host downloads the bundle,
+#      runs `docker build` and restarts the container (deploy/deploy.sh)
 #
-# Requires: project "Privileged mode" = enabled (Docker builds).
+# No ECR and no privileged mode needed: the image is built on the EC2 host.
 # Override any variable below in the CodeBuild project's environment settings.
 # =============================================================================
 version: 0.2
@@ -12,77 +13,56 @@ version: 0.2
 env:
   variables:
     AWS_DEFAULT_REGION: "us-east-1"
-    ECR_REPO_NAME: "sap-bank-clearing-api"
-    # Target EC2 instance(s), comma-separated (development host, us-east-1)
+    APP_NAME: "sap-bank-clearing-api"
+    # Bucket for build bundles (CodeBuild role can already write codepipeline-us-east-1-*)
+    BUNDLE_BUCKET: "codepipeline-us-east-1-922151790333"
+    BUNDLE_PREFIX: "sap-bank-clearing-api/releases"
+    # Target EC2 instance(s), comma-separated (development host)
     DEPLOY_INSTANCE_IDS: "i-019cd9689708261b3"
-    # Set to "false" to only build + push (no EC2 deploy)
+    # Set to "false" to only package + upload (no EC2 deploy)
     DEPLOY_ENABLED: "true"
     HOST_PORT: "8000"
     CONFIG_PARAM: "/sap-bank-clearing-api/config.ini"
-    DEPLOY_TIMEOUT_SECONDS: "600"
+    DEPLOY_TIMEOUT_SECONDS: "900"
 
 phases:
-  install:
-    commands:
-      - echo "Docker $(docker --version)"
-      - aws --version
-
   pre_build:
     commands:
-      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-      - REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
-      - IMAGE_REPO="${REGISTRY}/${ECR_REPO_NAME}"
       - COMMIT_TAG=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
-      - IMAGE_TAG="${COMMIT_TAG}-${CODEBUILD_BUILD_NUMBER:-0}"
-      - echo "Image -> ${IMAGE_REPO}:${IMAGE_TAG}"
-      # Create the ECR repository on first run (scan on push, immutable tags off so :latest can move)
-      - |
-        aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" >/dev/null 2>&1 || \
-          aws ecr create-repository --repository-name "$ECR_REPO_NAME" \
-            --image-scanning-configuration scanOnPush=true >/dev/null
-      - aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
-      # Pull previous image to reuse its layers as cache (ignore failure on first build)
-      - docker pull "${IMAGE_REPO}:latest" || true
+      - RELEASE="${COMMIT_TAG}-${CODEBUILD_BUILD_NUMBER:-0}"
+      - BUNDLE_URI="s3://${BUNDLE_BUCKET}/${BUNDLE_PREFIX}/${RELEASE}.tar.gz"
+      - echo "Release ${RELEASE} -> ${BUNDLE_URI}"
+      - python3 -m py_compile main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py bank_posting/*.py
 
   build:
     commands:
       - |
-        docker build \
-          --cache-from "${IMAGE_REPO}:latest" \
-          --label "org.opencontainers.image.revision=${CODEBUILD_RESOLVED_SOURCE_VERSION}" \
-          -t "${IMAGE_REPO}:${IMAGE_TAG}" \
-          -t "${IMAGE_REPO}:latest" .
-      # Smoke test: container must answer /health without config.ini
-      - docker run -d --name smoke -p 8000:8000 "${IMAGE_REPO}:${IMAGE_TAG}"
-      - |
-        for i in $(seq 1 20); do
-          curl -fsS http://127.0.0.1:8000/health && break
-          [ "$i" -eq 20 ] && { docker logs smoke; exit 1; }
-          sleep 2
-        done
-      - docker rm -f smoke
+        tar -czf "/tmp/${RELEASE}.tar.gz" \
+          Dockerfile .dockerignore requirements.txt \
+          main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py \
+          bank_posting deploy/deploy.sh
+      - ls -lh "/tmp/${RELEASE}.tar.gz"
+      - aws s3 cp "/tmp/${RELEASE}.tar.gz" "$BUNDLE_URI" --only-show-errors
 
   post_build:
     commands:
       # post_build runs even when build fails; stop here in that case
-      - '[ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ] || { echo "Build failed - skipping push/deploy"; exit 1; }'
-      - docker push "${IMAGE_REPO}:${IMAGE_TAG}"
-      - docker push "${IMAGE_REPO}:latest"
-      - printf '{"image":"%s","tag":"%s"}' "${IMAGE_REPO}:${IMAGE_TAG}" "$IMAGE_TAG" > image.json
+      - '[ "$CODEBUILD_BUILD_SUCCEEDING" = "1" ] || { echo "Build failed - skipping deploy"; exit 1; }'
       - |
         if [ "$DEPLOY_ENABLED" != "true" ]; then
           echo "DEPLOY_ENABLED=$DEPLOY_ENABLED - skipping EC2 deployment"
           exit 0
         fi
         set -e
+        # deploy.sh is sent inline so the host always runs the matching version
         SCRIPT_B64=$(base64 -w0 deploy/deploy.sh)
-        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/sap-bank-deploy.sh && HOST_PORT=${HOST_PORT} CONFIG_PARAM=${CONFIG_PARAM} bash /tmp/sap-bank-deploy.sh ${IMAGE_REPO}:${IMAGE_TAG} ${AWS_DEFAULT_REGION}"
+        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/${APP_NAME}-deploy.sh && APP_NAME=${APP_NAME} HOST_PORT=${HOST_PORT} CONFIG_PARAM=${CONFIG_PARAM} bash /tmp/${APP_NAME}-deploy.sh ${BUNDLE_URI} ${RELEASE} ${AWS_DEFAULT_REGION}"
         python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":[sys.argv[2]]}))' \
           "$CMD" "$DEPLOY_TIMEOUT_SECONDS" > ssm-params.json
 
         COMMAND_ID=$(aws ssm send-command \
           --document-name "AWS-RunShellScript" \
-          --comment "sap-bank-clearing-api ${IMAGE_TAG}" \
+          --comment "${APP_NAME} ${RELEASE}" \
           --targets "Key=InstanceIds,Values=${DEPLOY_INSTANCE_IDS}" \
           --parameters file://ssm-params.json \
           --timeout-seconds 120 \
@@ -105,9 +85,4 @@ phases:
           --query "CommandInvocations[].{instance:InstanceId,status:Status,output:CommandPlugins[0].Output}" \
           --output text
         [ -z "$(echo "$STATUSES" | tr '\t' '\n' | grep -v '^Success$')" ] || { echo "Deployment failed on at least one instance"; exit 1; }
-        echo "Deployed ${IMAGE_REPO}:${IMAGE_TAG} to ${DEPLOY_INSTANCE_IDS}"
-
-artifacts:
-  files:
-    - image.json
-  discard-paths: yes
+        echo "Deployed release ${RELEASE} to ${DEPLOY_INSTANCE_IDS}"

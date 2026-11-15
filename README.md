@@ -27,9 +27,9 @@ Excel / JSON items ──► POST /api/bank/post
 | `logger_setup.py` | Console + timestamped file logging into `log/` |
 | `config.example.ini` | Template for `config.ini` (never commit the real one) |
 | `Dockerfile`, `.dockerignore` | Container image |
-| `buildspec.yml` | AWS CodeBuild: build → push to ECR → deploy to EC2 |
-| `deploy/deploy.sh` | Runs on EC2 (via SSM) to pull and restart the container |
-| `DEPLOYMENT_PLAN.md` | One-time AWS setup and CI/CD plan |
+| `buildspec.yml` | AWS CodeBuild: package source → S3 → deploy to EC2 via SSM |
+| `deploy/deploy.sh` | Runs on EC2 (via SSM): download bundle, `docker build`, restart container |
+| `deploy/iam/` | IAM policies for the CodeBuild role and the EC2 instance role |
 
 More detail:
 [module usage](bank_posting/README.md) ·
@@ -112,10 +112,51 @@ curl http://localhost:8000/health
 
 ## Deployment (AWS, us-east-1)
 
-Push to `main` → CodeBuild `sap-bank-clearing-api` builds the image, pushes it to
-ECR `sap-bank-clearing-api`, and deploys it to the EC2 host(s) tagged
-`Name=development` through SSM Run Command, with a health check and automatic
-rollback. On the host the service runs as container `sap-bank-clearing-api` on
-port 8000, with config/logs/data under `/opt/sap-bank-clearing-api/`.
+No container registry is used; the image is built on the EC2 host.
 
-See **[DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md)** for the one-time AWS setup and operations.
+```
+GitHub main ──► CodeBuild sap-bank-clearing-api
+                  ├─ py_compile check
+                  ├─ tar source ──► s3://codepipeline-us-east-1-922151790333/sap-bank-clearing-api/releases/<commit>-<build>.tar.gz
+                  └─ SSM Run Command ──► EC2 i-019cd9689708261b3 (development)
+                                           ├─ download + extract bundle
+                                           ├─ docker build -t sap-bank-clearing-api:<release>
+                                           ├─ replace container, port 8000
+                                           └─ /health check, rollback to previous image on failure
+```
+
+On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clearing-api/`
+(`config.ini`, `log/`, `data/`, `releases/` — last 5 kept).
+
+### One-time setup
+
+1. **CodeBuild role** — allow SSM Run Command on the instance:
+   ```bash
+   aws iam put-role-policy --role-name codebuild-sap-bank-clearing-api-service-role \
+     --policy-name sap-bank-clearing-api-deploy --policy-document file://deploy/iam/codebuild-policy.json
+   ```
+   (S3 upload to `codepipeline-us-east-1-*` is already in its base policy.)
+2. **Docker on the instance** (Amazon Linux 2023):
+   ```bash
+   aws ssm send-command --region us-east-1 --instance-ids i-019cd9689708261b3 \
+     --document-name AWS-RunShellScript \
+     --parameters 'commands=["dnf install -y docker","systemctl enable --now docker"]'
+   ```
+3. **config.ini** — either place it on the host at `/opt/sap-bank-clearing-api/config.ini`,
+   or store it in Parameter Store and grant the instance role read access:
+   ```bash
+   aws ssm put-parameter --region us-east-1 --name /sap-bank-clearing-api/config.ini \
+     --type SecureString --value file://config.ini --overwrite
+   aws iam put-role-policy --role-name DataTwinEC2Role \
+     --policy-name sap-bank-clearing-api-config --policy-document file://deploy/iam/ec2-policy.json
+   ```
+   (The instance role already has S3 read via `AmazonS3FullAccess`.)
+4. **Security group** — allow inbound TCP 8000 from the callers of the API.
+
+### Operations
+
+- Deploy: push to `main` (with a webhook) or *Start build* in CodeBuild.
+- Build without deploying: set `DEPLOY_ENABLED=false` on the build.
+- Roll back: re-run an older build, or on the host
+  `docker rm -f sap-bank-clearing-api` and re-run with an older `sap-bank-clearing-api:<release>` image.
+- Logs: `docker logs -f sap-bank-clearing-api` or `/opt/sap-bank-clearing-api/log/`.

@@ -40,7 +40,7 @@ phases:
     commands:
       - |
         tar -czf "/tmp/${RELEASE}.tar.gz" \
-          Dockerfile .dockerignore requirements.txt \
+          Dockerfile .dockerignore requirements.txt config.ini \
           main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py \
           bank_posting deploy/deploy.sh
       - ls -lh "/tmp/${RELEASE}.tar.gz"

@@ -3,11 +3,12 @@
 Centralized Timestamped Logger for SAP Pipeline
 =============================================================================
 Features:
-  1. Writes to a 'log' folder inside the project directory (no static paths).
-     Override with [environment] log_dir in config.ini or the LOG_DIR env var;
-     relative values are resolved against the project directory.
+  1. Writes to a 'log' folder in the server's current working directory
+     (no static paths). Override with [environment] log_dir in config.ini or
+     the LOG_DIR env var; relative values are resolved against the current
+     working directory (in Docker: /app/log).
   2. Generates a timestamped log file on every session/run:
-     Example: <project>/log/log_20261110_133500.txt
+     Example: ./log/log_20261110_133500.txt
   3. Logs simultaneously to Terminal Console and Timestamped Log File.
   4. Automatically shared across app.py, db_manager.py, sync_bsid_to_bt3i.py, and api.py.
 =============================================================================
@@ -38,10 +39,10 @@ def _read_env_config() -> configparser.SectionProxy | dict:
 
 
 def _resolve_log_dir() -> Path:
-    """Log folder: LOG_DIR env var > config.ini log_dir > '<project>/log'."""
+    """Log folder: LOG_DIR env var > config.ini log_dir > './log' (current working dir)."""
     raw = os.environ.get("LOG_DIR") or _read_env_config().get("log_dir", "log") or "log"
     path = Path(raw).expanduser()
-    return path if path.is_absolute() else BASE_DIR / path
+    return path if path.is_absolute() else Path.cwd() / path
 
 
 LOG_DIR = _resolve_log_dir()

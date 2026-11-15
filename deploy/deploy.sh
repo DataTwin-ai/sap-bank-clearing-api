@@ -6,7 +6,7 @@
 #
 # 1. Downloads the source bundle from S3 and extracts it
 # 2. Builds the Docker image locally (sap-bank-clearing-api:<release>)
-# 3. Refreshes config.ini from SSM Parameter Store (if the parameter exists)
+# 3. Installs config.ini (from the bundle, else SSM Parameter Store)
 # 4. Replaces the running container
 # 5. Health-checks /health; rolls back to the previous image on failure
 #
@@ -44,25 +44,29 @@ command -v aws    >/dev/null || { log "ERROR: aws cli is not installed on this h
 mkdir -p "$APP_DIR/log" "$APP_DIR/data" "$APP_DIR/releases"
 chown -R 1000:1000 "$APP_DIR/log" "$APP_DIR/data"
 
-# --- config.ini --------------------------------------------------------------
-if aws ssm get-parameter --region "$AWS_REGION" --name "$CONFIG_PARAM" \
-      --with-decryption --query Parameter.Value --output text > "$APP_DIR/config.ini.new" 2>/dev/null; then
-  mv "$APP_DIR/config.ini.new" "$APP_DIR/config.ini"
-  log "config.ini refreshed from SSM parameter $CONFIG_PARAM"
-else
-  rm -f "$APP_DIR/config.ini.new"
-  log "SSM parameter $CONFIG_PARAM not readable; using existing $APP_DIR/config.ini"
-fi
-[ -s "$APP_DIR/config.ini" ] || { log "ERROR: $APP_DIR/config.ini missing"; exit 1; }
-chmod 640 "$APP_DIR/config.ini"
-chown root:1000 "$APP_DIR/config.ini"
-
 # --- download + build --------------------------------------------------------
 log "Downloading $BUNDLE_URI"
 rm -rf "$RELEASE_DIR" && mkdir -p "$RELEASE_DIR"
 aws s3 cp "$BUNDLE_URI" "$RELEASE_DIR/bundle.tar.gz" --region "$AWS_REGION" --only-show-errors
 tar -xzf "$RELEASE_DIR/bundle.tar.gz" -C "$RELEASE_DIR"
 rm -f "$RELEASE_DIR/bundle.tar.gz"
+
+# --- config.ini --------------------------------------------------------------
+# Priority: config.ini shipped in the bundle (from git) > SSM parameter >
+# existing $APP_DIR/config.ini on the host.
+if [ -s "$RELEASE_DIR/config.ini" ]; then
+  cp "$RELEASE_DIR/config.ini" "$APP_DIR/config.ini"
+  log "config.ini taken from release bundle"
+elif aws ssm get-parameter --region "$AWS_REGION" --name "$CONFIG_PARAM" --with-decryption --query Parameter.Value --output text > "$APP_DIR/config.ini.new" 2>/dev/null; then
+  mv "$APP_DIR/config.ini.new" "$APP_DIR/config.ini"
+  log "config.ini refreshed from SSM parameter $CONFIG_PARAM"
+else
+  rm -f "$APP_DIR/config.ini.new"
+  log "No config.ini in bundle and SSM parameter $CONFIG_PARAM not readable; using existing $APP_DIR/config.ini"
+fi
+[ -s "$APP_DIR/config.ini" ] || { log "ERROR: $APP_DIR/config.ini missing"; exit 1; }
+chmod 640 "$APP_DIR/config.ini"
+chown root:1000 "$APP_DIR/config.ini"
 
 log "Building image $IMAGE"
 docker build -t "$IMAGE" "$RELEASE_DIR"

@@ -4,6 +4,7 @@
 !/README.md
 !/requirements.txt
 !/config.example.ini
+!/config.ini
 !/logger_setup.py
 !/db_manager.py
 !/sap_odata_extractor.py
@@ -17,7 +18,6 @@
 !/DEPLOYMENT_PLAN.md
 
 # never commit
-config.ini
 .env
 __pycache__/
 *.pyc

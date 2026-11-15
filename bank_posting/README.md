@@ -25,7 +25,7 @@ settings), `logger_setup.py`, `sap_odata_extractor.py`.
 | Swagger UI | `http://localhost:8001/docs` |
 | ReDoc | `http://localhost:8001/redoc` |
 | Main API (already wired) | `python api.py` → same endpoint on port 8000 |
-| CLI | `python -m bank_posting.posting "C:\SAP\log\BANK EXCEL SHEET.xlsx" --dry-run` (from `C:\SAP`) |
+| CLI | `python -m bank_posting.posting "data/BANK EXCEL SHEET.xlsx" --dry-run` (from the project folder) |
 
 ## Request
 
@@ -33,7 +33,7 @@ settings), `logger_setup.py`, `sap_odata_extractor.py`.
 
 ```json
 {
-  "file_path": "C:\\SAP\\log\\BANK EXCEL SHEET.xlsx",
+  "file_path": "data/BANK EXCEL SHEET.xlsx",
   "dry_run": true,
   "match_by": "XBLNR",
   "check_open_items": true

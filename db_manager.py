@@ -10,7 +10,7 @@ Features:
      - In-memory Deduplication before SQL operations.
      - Database-level Duplicate Filtering (prevents inserting already existing rows).
      - Unique Index enforcement to guarantee zero duplicates.
-  3. Integrated Centralized Timestamped Logging in 'C:\\SAP\\log\\'.
+  3. Integrated Centralized Timestamped Logging in the project 'log/' folder.
 =============================================================================
 """
 

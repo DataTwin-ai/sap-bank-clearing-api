@@ -3,9 +3,11 @@
 Centralized Timestamped Logger for SAP Pipeline
 =============================================================================
 Features:
-  1. Creates and manages the 'C:\\SAP\\log\\' directory.
+  1. Writes to a 'log' folder inside the project directory (no static paths).
+     Override with [environment] log_dir in config.ini or the LOG_DIR env var;
+     relative values are resolved against the project directory.
   2. Generates a timestamped log file on every session/run:
-     Example: C:\\SAP\\log\\log_20261110_133500.txt
+     Example: <project>/log/log_20261110_133500.txt
   3. Logs simultaneously to Terminal Console and Timestamped Log File.
   4. Automatically shared across app.py, db_manager.py, sync_bsid_to_bt3i.py, and api.py.
 =============================================================================
@@ -20,7 +22,29 @@ from pathlib import Path
 from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "log"
+CONFIG_FILE = BASE_DIR / "config.ini"
+
+
+def _read_env_config() -> configparser.SectionProxy | dict:
+    if CONFIG_FILE.exists():
+        try:
+            cfg = configparser.ConfigParser()
+            cfg.read(CONFIG_FILE, encoding="utf-8")
+            if cfg.has_section("environment"):
+                return cfg["environment"]
+        except Exception:
+            pass
+    return {}
+
+
+def _resolve_log_dir() -> Path:
+    """Log folder: LOG_DIR env var > config.ini log_dir > '<project>/log'."""
+    raw = os.environ.get("LOG_DIR") or _read_env_config().get("log_dir", "log") or "log"
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+LOG_DIR = _resolve_log_dir()
 
 _CURRENT_LOG_FILE: Optional[Path] = None
 
@@ -36,19 +60,9 @@ def get_session_log_file() -> Path:
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Read configuration defaults
-    config_file = BASE_DIR / "config.ini"
-    prefix = "log"
-    ext = "txt"
-
-    if config_file.exists():
-        try:
-            cfg = configparser.ConfigParser()
-            cfg.read(config_file, encoding="utf-8")
-            prefix = cfg.get("environment", "log_file_prefix", fallback="log")
-            ext = cfg.get("environment", "log_extension", fallback="txt")
-        except Exception:
-            pass
+    env_cfg = _read_env_config()
+    prefix = env_cfg.get("log_file_prefix", "log") or "log"
+    ext = env_cfg.get("log_extension", "txt") or "txt"
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     _CURRENT_LOG_FILE = LOG_DIR / f"{prefix}_{timestamp}.{ext}"

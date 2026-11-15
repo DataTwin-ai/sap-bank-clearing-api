@@ -107,7 +107,7 @@ class BankPostingRequest(BaseModel):
     file_path: Optional[str] = Field(
         default=None,
         description="Absolute or relative path to Excel file on server",
-        example="C:\\SAP\\log\\BANK EXCEL SHEET.xlsx" if not PYDANTIC_V2 else None,
+        example="data/BANK EXCEL SHEET.xlsx" if not PYDANTIC_V2 else None,
     )
     sheet: Optional[str] = Field(
         default=None,

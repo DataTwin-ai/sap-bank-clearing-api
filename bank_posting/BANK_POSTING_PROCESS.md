@@ -66,10 +66,10 @@ module behind SAP's built-in `/sap/bc/soap/rfc` endpoint needs no service regist
 ## 3. How to run
 
 ```bash
-# from C:\SAP
+# from the project folder
 python bank_posting\server.py --port 8001      # standalone
 python api.py                                  # or: main API on port 8000
-python -m bank_posting.posting "C:\SAP\log\BANK EXCEL SHEET.xlsx" --dry-run   # CLI
+python -m bank_posting.posting "data/BANK EXCEL SHEET.xlsx" --dry-run   # CLI
 ```
 
 **Always run with `"dry_run": true` first.** Dry run validates the data and checks open items without posting anything.

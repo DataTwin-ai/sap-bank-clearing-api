@@ -14,6 +14,8 @@
 #   APP_NAME        container/image name       (default: sap-bank-clearing-api)
 #   APP_DIR         host dir for config/logs   (default: /opt/sap-bank-clearing-api)
 #   HOST_PORT       host port mapped to 8000   (default: 8000)
+#   BIND_ADDR       host address to bind       (default: 127.0.0.1 - only nginx reaches it)
+#   ROOT_PATH       URL prefix behind nginx    (default: /sap/bank)
 #   CONFIG_PARAM    SSM SecureString holding config.ini
 #                                              (default: /sap-bank-clearing-api/config.ini)
 #   KEEP_RELEASES   releases/images to keep    (default: 5)
@@ -26,6 +28,8 @@ AWS_REGION="${3:-us-east-1}"
 APP_NAME="${APP_NAME:-sap-bank-clearing-api}"
 APP_DIR="${APP_DIR:-/opt/sap-bank-clearing-api}"
 HOST_PORT="${HOST_PORT:-8000}"
+BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
+ROOT_PATH="${ROOT_PATH-/sap/bank}"
 CONFIG_PARAM="${CONFIG_PARAM:-/sap-bank-clearing-api/config.ini}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
 IMAGE="${APP_NAME}:${RELEASE}"
@@ -70,7 +74,8 @@ run_container() {
   docker run -d \
     --name "$APP_NAME" \
     --restart unless-stopped \
-    -p "${HOST_PORT}:8000" \
+    -p "${BIND_ADDR}:${HOST_PORT}:8000" \
+    -e ROOT_PATH="$ROOT_PATH" \
     -v "$APP_DIR/config.ini:/app/config.ini:ro" \
     -v "$APP_DIR/log:/app/log" \
     -v "$APP_DIR/data:/app/data" \
@@ -95,7 +100,7 @@ cleanup_old() {
   docker image prune -f >/dev/null 2>&1 || true
 }
 
-log "Starting $APP_NAME from $IMAGE on port $HOST_PORT"
+log "Starting $APP_NAME from $IMAGE on ${BIND_ADDR}:${HOST_PORT} (root path: ${ROOT_PATH:-/})"
 run_container "$IMAGE"
 
 if healthy; then

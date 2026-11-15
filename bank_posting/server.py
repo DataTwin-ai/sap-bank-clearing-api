@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
@@ -268,9 +268,14 @@ app.add_middleware(
     include_in_schema=False,
     summary="Root redirect to Swagger UI",
 )
-async def root():
-    """Redirects base URL to the interactive Swagger documentation."""
-    return RedirectResponse(url="/docs")
+async def root(request: Request):
+    """Redirects base URL to the interactive Swagger documentation.
+
+    Honours the root path (e.g. /sap/bank behind nginx) so the redirect
+    stays under the proxy prefix.
+    """
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    return RedirectResponse(url=f"{root_path}/docs")
 
 
 @app.get(

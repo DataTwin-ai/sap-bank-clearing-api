@@ -22,6 +22,8 @@ env:
     # Set to "false" to only package + upload (no EC2 deploy)
     DEPLOY_ENABLED: "true"
     HOST_PORT: "8000"
+    # URL prefix nginx serves the API under (https://demo.datatwin.ai/sap/bank)
+    ROOT_PATH: "/sap/bank"
     CONFIG_PARAM: "/sap-bank-clearing-api/config.ini"
     DEPLOY_TIMEOUT_SECONDS: "900"
 
@@ -56,7 +58,7 @@ phases:
         set -e
         # deploy.sh is sent inline so the host always runs the matching version
         SCRIPT_B64=$(base64 -w0 deploy/deploy.sh)
-        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/${APP_NAME}-deploy.sh && APP_NAME=${APP_NAME} HOST_PORT=${HOST_PORT} CONFIG_PARAM=${CONFIG_PARAM} bash /tmp/${APP_NAME}-deploy.sh ${BUNDLE_URI} ${RELEASE} ${AWS_DEFAULT_REGION}"
+        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/${APP_NAME}-deploy.sh && APP_NAME=${APP_NAME} HOST_PORT=${HOST_PORT} ROOT_PATH=${ROOT_PATH} CONFIG_PARAM=${CONFIG_PARAM} bash /tmp/${APP_NAME}-deploy.sh ${BUNDLE_URI} ${RELEASE} ${AWS_DEFAULT_REGION}"
         python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":[sys.argv[2]]}))' \
           "$CMD" "$DEPLOY_TIMEOUT_SECONDS" > ssm-params.json
 

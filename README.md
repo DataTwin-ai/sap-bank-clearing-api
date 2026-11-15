@@ -30,6 +30,7 @@ Excel / JSON items ──► POST /api/bank/post
 | `buildspec.yml` | AWS CodeBuild: package source → S3 → deploy to EC2 via SSM |
 | `deploy/deploy.sh` | Runs on EC2 (via SSM): download bundle, `docker build`, restart container |
 | `deploy/iam/` | IAM policies for the CodeBuild role and the EC2 instance role |
+| `deploy/nginx/sap-bank.conf` | nginx location for `https://demo.datatwin.ai/sap/bank` |
 
 More detail:
 [module usage](bank_posting/README.md) ·
@@ -121,9 +122,13 @@ GitHub main ──► CodeBuild sap-bank-clearing-api
                   └─ SSM Run Command ──► EC2 i-019cd9689708261b3 (development)
                                            ├─ download + extract bundle
                                            ├─ docker build -t sap-bank-clearing-api:<release>
-                                           ├─ replace container, port 8000
+                                           ├─ replace container on 127.0.0.1:8000 (ROOT_PATH=/sap/bank)
                                            └─ /health check, rollback to previous image on failure
 ```
+
+Public URL: **https://demo.datatwin.ai/sap/bank/** (Swagger: `/sap/bank/docs`,
+health: `/sap/bank/health`, posting: `POST /sap/bank/api/bank/post`). nginx on the
+host proxies `/sap/bank/` to the container, which listens only on `127.0.0.1:8000`.
 
 On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clearing-api/`
 (`config.ini`, `log/`, `data/`, `releases/` — last 5 kept).
@@ -151,7 +156,10 @@ On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clear
      --policy-name sap-bank-clearing-api-config --policy-document file://deploy/iam/ec2-policy.json
    ```
    (The instance role already has S3 read via `AmazonS3FullAccess`.)
-4. **Security group** — allow inbound TCP 8000 from the callers of the API.
+4. **nginx** — install [deploy/nginx/sap-bank.conf](deploy/nginx/sap-bank.conf) as
+   `/etc/nginx/snippets/sap-bank.conf`, add `include /etc/nginx/snippets/sap-bank.conf;`
+   inside the `demo.datatwin.ai` 443 server block, then `sudo nginx -t && sudo systemctl reload nginx`.
+   Port 8000 does not need to be open in the security group.
 
 ### Operations
 
@@ -159,4 +167,4 @@ On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clear
 - Build without deploying: set `DEPLOY_ENABLED=false` on the build.
 - Roll back: re-run an older build, or on the host
   `docker rm -f sap-bank-clearing-api` and re-run with an older `sap-bank-clearing-api:<release>` image.
-- Logs: `docker logs -f sap-bank-clearing-api` or `/opt/sap-bank-clearing-api/log/`.
+- Logs: `sudo docker logs -f sap-bank-clearing-api` or `/opt/sap-bank-clearing-api/log/`.

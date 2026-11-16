@@ -24,16 +24,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import uvicorn
-from fastapi import FastAPI, File, Form, Request, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 try:
     from pydantic import BaseModel, ConfigDict, Field
+
     PYDANTIC_V2 = True
 except ImportError:
     from pydantic import BaseModel, Field  # type: ignore
+
     ConfigDict = None  # type: ignore
     PYDANTIC_V2 = False
 
@@ -42,7 +44,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from bank_posting.posting import data_dir, logger, process_request  # noqa: E402
+from bank_posting.auth import require_api_key  # noqa: E402
+from bank_posting.posting import data_dir, logger, process_bank_posting  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +106,7 @@ class BankPostingItem(BaseModel):
     if PYDANTIC_V2:
         model_config = ConfigDict(extra="allow")
     else:
+
         class Config:
             extra = "allow"
 
@@ -121,7 +125,7 @@ class BankPostingRequest(BaseModel):
         description=(
             "Excel file: an S3 location (s3://bucket/key or https://bucket.s3.amazonaws.com/key), "
             "or a path on the server. If a path does not exist on the server, a file with the "
-            "same name in the server data folder is used (e.g. C:/SAP/log/BANK.xlsx -> data/BANK.xlsx)."
+            r"same name in the server data folder is used (e.g. C:\SAP\log\BANK.xlsx -> data/BANK.xlsx)."
         ),
         example="data/BANK EXCEL SHEET.xlsx" if not PYDANTIC_V2 else None,
     )
@@ -160,17 +164,19 @@ class BankPostingRequest(BaseModel):
         default=None,
         description=(
             "Tenant. When set, file_path is read from the tenant S3 bucket: "
-            "s3://dt-<tenant_id>-<env>/<org_id>/<path without drive letter>"
+            "s3://dt-<tenant_id>-<env>/<folder>/<org_id>/<file name>"
         ),
     )
-    org_id: Optional[str] = Field(default=None, description="Organisation id (first folder of the S3 key)")
+    org_id: Optional[str] = Field(
+        default=None,
+        description="Organisation id (folder inside the file folder: <folder>/<org_id>/<file>)",
+    )
 
     if PYDANTIC_V2:
         model_config = ConfigDict(
             json_schema_extra={
                 "example": {
-                    "file_type": "bank",
-                    "file_path": "SAP/BANK EXCEL SHEET.xlsx",
+                    "file_path": "C:\\SAP\\BANK EXCEL SHEET.xlsx",
                     "sheet": "F-30 Upload",
                     "dry_run": True,
                     "update_db": True,
@@ -206,15 +212,15 @@ class BankPostingRequest(BaseModel):
                             "item_text": "Bank receipt",
                         }
                     ],
-                }
+                },
             }
         )
     else:
+
         class Config:
             schema_extra = {
                 "example": {
-                    "file_type": "bank",
-                    "file_path": "SAP/BANK EXCEL SHEET.xlsx",
+                    "file_path": "C:\\SAP\\BANK EXCEL SHEET.xlsx",
                     "sheet": "F-30 Upload",
                     "dry_run": True,
                     "update_db": True,
@@ -250,13 +256,15 @@ class BankPostingRequest(BaseModel):
                             "item_text": "Bank receipt",
                         }
                     ],
-                }
+                },
             }
 
 
 class PostingItemResult(BaseModel):
     row: int = Field(description="Row index")
-    status: str = Field(description="Status: VALID, INVALID, SUCCESS, POSTED_NOT_CLEARED, ERROR, NOT_POSTED")
+    status: str = Field(
+        description="Status: VALID, INVALID, SUCCESS, POSTED_NOT_CLEARED, ERROR, NOT_POSTED"
+    )
     company_code: Optional[str] = None
     customer: Optional[str] = None
     invoice_ref: Optional[str] = None
@@ -272,6 +280,7 @@ class PostingItemResult(BaseModel):
     if PYDANTIC_V2:
         model_config = ConfigDict(extra="allow")
     else:
+
         class Config:
             extra = "allow"
 
@@ -280,9 +289,15 @@ class BankPostingResponse(BaseModel):
     status: str = Field(description="Execution status (completed / error)")
     batch_id: Optional[str] = Field(None, description="Batch execution identifier")
     dry_run: bool = Field(description="Whether this was a dry run")
-    match_by: Optional[str] = Field(None, description="Matching rule used (XBLNR, ZUONR, BELNR)")
-    source: Optional[str] = Field(None, description="Source of items (file path or json)")
-    sap_posting: Optional[str] = Field(None, description="Status of SAP RFC posting connection")
+    match_by: Optional[str] = Field(
+        None, description="Matching rule used (XBLNR, ZUONR, BELNR)"
+    )
+    source: Optional[str] = Field(
+        None, description="Source of items (file path or json)"
+    )
+    sap_posting: Optional[str] = Field(
+        None, description="Status of SAP RFC posting connection"
+    )
     total: int = Field(description="Total rows processed")
     summary: Dict[str, int] = Field(description="Count breakdown by row status")
     db_update: Dict[str, Any] = Field(description="Database document ID update summary")
@@ -292,6 +307,7 @@ class BankPostingResponse(BaseModel):
     if PYDANTIC_V2:
         model_config = ConfigDict(extra="allow")
     else:
+
         class Config:
             extra = "allow"
 
@@ -373,7 +389,9 @@ class WindowsPathJSONMiddleware:
             except ValueError:
                 pass  # still invalid: let FastAPI report the original error
             else:
-                logger.info("[REQUEST] escaped single backslashes in JSON body (Windows path)")
+                logger.info(
+                    "[REQUEST] escaped single backslashes in JSON body (Windows path)"
+                )
                 body = fixed.encode("utf-8")
 
         sent = False
@@ -423,8 +441,10 @@ async def health():
     responses={
         200: {"description": "Posting and validation results"},
         400: {"model": ErrorResponse, "description": "Validation or file error"},
+        401: {"description": "Missing or invalid X-API-Key"},
         500: {"model": ErrorResponse, "description": "Server or SAP error"},
     },
+    dependencies=[Depends(require_api_key)],
     tags=["Bank Posting"],
     summary="Process Bank or Invoice File",
     description=(
@@ -454,10 +474,17 @@ async def bank_post(payload: BankPostingRequest):
         )
         return res
     except (ValueError, FileNotFoundError) as e:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": str(e)})
+        logger.warning(f"[BANK POST] 400 Bad Request: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "message": str(e)},
+        )
     except Exception as e:
         logger.error(f"Bank posting failed: {e}")
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": str(e)})
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
@@ -469,8 +496,10 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
     responses={
         200: {"description": "Posting and validation results"},
         400: {"model": ErrorResponse, "description": "Validation or file error"},
+        401: {"description": "Missing or invalid X-API-Key"},
         500: {"model": ErrorResponse, "description": "Server or SAP error"},
     },
+    dependencies=[Depends(require_api_key)],
     tags=["Bank Posting"],
     summary="Upload Bank or Invoice Excel, Validate and Update DB",
     description=(
@@ -480,17 +509,33 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
 )
 async def bank_upload(
     file: UploadFile = File(..., description="Excel file (.xlsx)"),
-    file_type: Optional[str] = Form(None, description="bank | invoice (default: detected from header)"),
+    file_type: Optional[str] = Form(
+        None, description="bank | invoice (default: detected from header)"
+    ),
     sheet: Optional[str] = Form(None, description="Sheet name (default: first sheet)"),
-    dry_run: bool = Form(False, description="true = validate only, no SAP posting / DB update"),
-    match_by: Optional[str] = Form(None, description="Bank: XBLNR | ZUONR | BELNR. Invoice: ANY | XBLNR | ZUONR | BELNR"),
-    update_db: bool = Form(True, description="Write SAP document numbers to active_bt3i / active_bs"),
-    company_code: Optional[str] = Form(None, description="Invoice files: company code to check"),
+    dry_run: bool = Form(
+        False, description="true = validate only, no SAP posting / DB update"
+    ),
+    match_by: Optional[str] = Form(
+        None,
+        description="Bank: XBLNR | ZUONR | BELNR. Invoice: ANY | XBLNR | ZUONR | BELNR",
+    ),
+    update_db: bool = Form(
+        True, description="Write SAP document numbers to active_bt3i / active_bs"
+    ),
+    company_code: Optional[str] = Form(
+        None, description="Invoice files: company code to check"
+    ),
 ):
     name = _SAFE_NAME.sub("_", Path(file.filename or "upload.xlsx").name)
     if not name.lower().endswith((".xlsx", ".xlsm")):
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content={"status": "error", "message": "Only .xlsx / .xlsm files are supported"})
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "status": "error",
+                "message": "Only .xlsx / .xlsm files are supported",
+            },
+        )
     folder = data_dir() / "uploads"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
@@ -508,10 +553,17 @@ async def bank_upload(
             company_code=company_code or None,
         )
     except (ValueError, FileNotFoundError) as e:
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": str(e)})
+        logger.warning(f"[BANK POST] 400 Bad Request: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "message": str(e)},
+        )
     except Exception as e:
         logger.error(f"Bank upload posting failed: {e}")
-        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"status": "error", "message": str(e)})
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": "error", "message": str(e)},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -519,9 +571,21 @@ async def bank_upload(
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bank Posting FastAPI Server")
-    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8001, help="Port to listen on (default: 8001)")
-    parser.add_argument("--reload", action="store_true", help="Enable auto-reload on code changes")
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Host interface to bind (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8001, help="Port to listen on (default: 8001)"
+    )
+    parser.add_argument(
+        "--reload", action="store_true", help="Enable auto-reload on code changes"
+    )
     args = parser.parse_args()
 
-    uvicorn.run("bank_posting.server:app", host=args.host, port=args.port, reload=args.reload, log_level="info")
+    uvicorn.run(
+        "bank_posting.server:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        log_level="info",
+    )

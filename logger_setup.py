@@ -20,13 +20,13 @@ import logging
 import configparser
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.ini"
 
 
-def _read_env_config() -> configparser.SectionProxy | dict:
+def _read_env_config() -> Union[configparser.SectionProxy, dict]:
     if CONFIG_FILE.exists():
         try:
             cfg = configparser.ConfigParser()

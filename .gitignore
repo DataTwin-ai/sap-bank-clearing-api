@@ -11,6 +11,7 @@
 !/main.py
 !/api.py
 !/bank_posting/
+!/.vscode/
 !/Dockerfile
 !/.dockerignore
 !/buildspec.yml

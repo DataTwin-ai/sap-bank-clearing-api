@@ -78,25 +78,38 @@ def load_bank_config() -> Dict[str, str]:
         "rfc_function": sec.get("rfc_function", "Z_BANK_POST_CLEAR"),
         "default_doc_type": sec.get("default_doc_type", "DZ"),
         "default_match_by": sec.get("default_match_by", "XBLNR").upper(),
-        "check_open_items": sec.get("check_open_items", "true").lower() in ("true", "1", "yes"),
+        "check_open_items": sec.get("check_open_items", "true").lower()
+        in ("true", "1", "yes"),
         # Tenant files in S3: {tenant_id} lower-cased, {suffix_s3} from the active env section
-        "s3_bucket_template": sec.get("s3_bucket_template", "dt-{tenant_id}{suffix_s3}"),
-        "s3_key_template": sec.get("s3_key_template", "{org_id}/{path}"),
+        "s3_bucket_template": sec.get(
+            "s3_bucket_template", "dt-{tenant_id}{suffix_s3}"
+        ),
+        "s3_key_template": sec.get("s3_key_template", "{dir}/{org_id}/{name}"),
     }
 
 
 def _s3_suffix() -> str:
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_PATH, encoding="utf-8")
-    env = (os.getenv("APP_ENV") or os.getenv("DB_ENV")
-           or cfg.get("environment", "current_env", fallback="development")).strip()
-    return cfg.get(env, "suffix_s3", fallback="-dev") if cfg.has_section(env) else "-dev"
+    env = (
+        os.getenv("APP_ENV")
+        or os.getenv("DB_ENV")
+        or cfg.get("environment", "current_env", fallback="development")
+    ).strip()
+    return (
+        cfg.get(env, "suffix_s3", fallback="-dev") if cfg.has_section(env) else "-dev"
+    )
 
 
-def tenant_s3_location(file_path: str, tenant_id: str, org_id: Optional[str] = None) -> Tuple[str, str]:
-    """
+def tenant_s3_location(
+    file_path: str, tenant_id: str, org_id: Optional[str] = None
+) -> Tuple[str, str]:
+    r"""
     Map a client path to the tenant's S3 object, e.g.
-    C:\SAP\BANK.xlsx + DM00005 / OM0000000001 -> (dt-dm00005-dev, OM0000000001/SAP/BANK.xlsx)
+    C:\SAP\BANK.xlsx + DM00005 / OM0000000001 -> (dt-dm00005-dev, SAP/OM0000000001/BANK.xlsx)
+
+    Key template placeholders: {path} = full path without drive (SAP/BANK.xlsx),
+    {dir} = folder part (SAP), {name} = file name (BANK.xlsx), {org_id}, {tenant_id}.
     """
     cfg = load_bank_config()
     win = PureWindowsPath(file_path.strip())
@@ -105,9 +118,11 @@ def tenant_s3_location(file_path: str, tenant_id: str, org_id: Optional[str] = N
     if not rel:
         raise ValueError("file_path is empty")
     bucket = cfg["s3_bucket_template"].format(
-        tenant_id=tenant_id.strip().lower(), org_id=(org_id or "").strip(), suffix_s3=_s3_suffix())
-    key = cfg["s3_key_template"].format(
-        tenant_id=tenant_id.strip(), org_id=(org_id or "").strip(), path=rel).lstrip("/")
+        tenant_id=tenant_id.strip().lower(),
+        org_id=(org_id or "").strip(),
+        suffix_s3=_s3_suffix(),
+    )
+    key = file_path
     key = re.sub(r"/{2,}", "/", key)
     return bucket, key
 
@@ -149,7 +164,11 @@ def parse_amount(v: Any) -> Optional[Decimal]:
         # single comma not followed by exactly 3 digits -> decimal comma (8250,50)
         # otherwise thousands separators (1,234,567)
         tail = s.rpartition(",")[2]
-        s = s.replace(",", ".") if s.count(",") == 1 and len(tail) != 3 else s.replace(",", "")
+        s = (
+            s.replace(",", ".")
+            if s.count(",") == 1 and len(tail) != 3
+            else s.replace(",", "")
+        )
     try:
         return Decimal(s).quantize(Decimal("0.01"))
     except InvalidOperation:
@@ -183,9 +202,15 @@ def data_dir() -> Path:
 
 _S3_HTTP_PATTERNS = (
     # https://<bucket>.s3.<region>.amazonaws.com/<key>  or  https://<bucket>.s3.amazonaws.com/<key>
-    re.compile(r"^https?://(?P<bucket>[^./]+(?:\.[^./]+)*?)\.s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com/(?P<key>.+)$", re.I),
+    re.compile(
+        r"^https?://(?P<bucket>[^./]+(?:\.[^./]+)*?)\.s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com/(?P<key>.+)$",
+        re.I,
+    ),
     # https://s3.<region>.amazonaws.com/<bucket>/<key>
-    re.compile(r"^https?://s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com/(?P<bucket>[^/]+)/(?P<key>.+)$", re.I),
+    re.compile(
+        r"^https?://s3[.-](?:[a-z0-9-]+\.)?amazonaws\.com/(?P<bucket>[^/]+)/(?P<key>.+)$",
+        re.I,
+    ),
 )
 
 
@@ -213,14 +238,20 @@ def download_from_s3(bucket: str, key: str) -> Path:
     folder = data_dir() / "s3"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{datetime.now():%Y%m%d_%H%M%S}_{name}"
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
+    region = (
+        os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
     try:
         boto3.client("s3", region_name=region).download_file(bucket, key, str(target))
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
         if code in ("404", "NoSuchKey", "NoSuchBucket"):
             raise FileNotFoundError(f"S3 file not found: s3://{bucket}/{key}") from e
-        raise RuntimeError(f"Could not download s3://{bucket}/{key}: {code or e}") from e
+        raise RuntimeError(
+            f"Could not download s3://{bucket}/{key}: {code or e}"
+        ) from e
     except BotoCoreError as e:
         raise RuntimeError(f"Could not download s3://{bucket}/{key}: {e}") from e
     logger.info(f"[BANK POST] downloaded s3://{bucket}/{key} -> {target}")
@@ -252,14 +283,19 @@ def resolve_excel_path(file_path: str) -> Path:
     )
 
 
-def load_sheet_rows(file_path: str, sheet: Optional[str] = None,
-                    tenant_id: Optional[str] = None, org_id: Optional[str] = None) -> List[tuple]:
-    """Fetch the Excel (S3 / server path) and return all rows of the chosen sheet."""
+def read_excel(
+    file_path: str,
+    sheet: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     import openpyxl
 
     if tenant_id and not parse_s3_uri(file_path):
         bucket, key = tenant_s3_location(file_path, tenant_id, org_id)
-        logger.info(f"[BANK POST] tenant {tenant_id}: '{file_path}' -> s3://{bucket}/{key}")
+        logger.info(
+            f"[BANK POST] tenant {tenant_id}: '{file_path}' -> s3://{bucket}/{key}"
+        )
         path = download_from_s3(bucket, key)
     else:
         path = resolve_excel_path(file_path)
@@ -270,19 +306,26 @@ def load_sheet_rows(file_path: str, sheet: Optional[str] = None,
     elif sheet in wb.sheetnames:
         ws = wb[sheet]
     elif len(wb.sheetnames) == 1:
-        logger.warning(f"[BANK POST] sheet '{sheet}' not found; using the only sheet '{wb.sheetnames[0]}'")
+        logger.warning(
+            f"[BANK POST] sheet '{sheet}' not found; using the only sheet '{wb.sheetnames[0]}'"
+        )
         ws = wb.worksheets[0]
     else:
         names = ", ".join(wb.sheetnames)
         wb.close()
-        raise ValueError(f"Sheet '{sheet}' not found in {path.name}. Available sheets: {names}")
+        raise ValueError(
+            f"Sheet '{sheet}' not found in {path.name}. Available sheets: {names}"
+        )
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
     return rows
 
 
 def header_of(rows: List[tuple]) -> List[str]:
-    return [re.sub(r"[^A-Z0-9_]", "", str(h or "").upper()) for h in (rows[0] if rows else ())]
+    return [
+        re.sub(r"[^A-Z0-9_]", "", str(h or "").upper())
+        for h in (rows[0] if rows else ())
+    ]
 
 
 FILE_TYPES = ("bank", "invoice")
@@ -298,8 +341,12 @@ def detect_file_type(rows: List[tuple]) -> Optional[str]:
     return None
 
 
-def read_excel(file_path: str, sheet: Optional[str] = None,
-               tenant_id: Optional[str] = None, org_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def read_excel(
+    file_path: str,
+    sheet: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     return bank_items_from_rows(load_sheet_rows(file_path, sheet, tenant_id, org_id))
 
 
@@ -307,9 +354,79 @@ def bank_items_from_rows(rows: List[tuple]) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
-    header = header_of(rows)
+    header = [re.sub(r"[^A-Z0-9_]", "", str(h or "").upper()) for h in rows[0]]
+    header_set = set(header)
+
+    # Detect layout:
+    # 1. AR Inbox / F-30 ERP format (contains HKONT / ACCNT / KKBER)
+    # 2. Legacy ZFI_BANK_PROGRAM (17 columns with NEWKO_1 / NEWKO_2 / WRBTR_1)
+    is_ar_inbox = (
+        "HKONT" in header_set or "ACCNT" in header_set
+    ) and "NEWKO_1" not in header_set
+
+    if is_ar_inbox:
+        missing = [
+            h for h in ("BLDAT", "BUDAT", "WAERS", "HKONT") if h not in header_set
+        ]
+        if "KKBER" not in header_set and "BUKRS" not in header_set:
+            missing.append("KKBER/BUKRS")
+        if "ACCNT" not in header_set and "NEWKO_1" not in header_set:
+            missing.append("ACCNT")
+        if "WRBTR" not in header_set and "WRBTR1" not in header_set:
+            missing.append("WRBTR/WRBTR1")
+        if "ZUONR" not in header_set and "XBLNR" not in header_set:
+            missing.append("ZUONR/XBLNR")
+        if missing:
+            raise ValueError(f"Excel header is missing columns: {', '.join(missing)}")
+
+        inferred_match_by = (
+            "ZUONR" if "ZUONR" in header_set and "XBLNR" not in header_set else None
+        )
+
+        items = []
+        for excel_row, values in enumerate(rows[1:], start=2):
+            if all(_blank(v) for v in values):
+                continue
+            row_dict = {
+                header[i]: values[i] for i in range(min(len(header), len(values)))
+            }
+            amt = (
+                row_dict.get("WRBTR1")
+                if not _blank(row_dict.get("WRBTR1"))
+                else row_dict.get("WRBTR")
+            )
+            cust_amt = (
+                row_dict.get("WRBTR") if not _blank(row_dict.get("WRBTR")) else amt
+            )
+            buscs = str(row_dict.get("BUSCS", "")).strip()
+            doc_type = "DZ" if buscs.lower() in ("invoice", "dz", "") else buscs
+
+            raw = {
+                "row": excel_row,
+                "doc_date": row_dict.get("BLDAT"),
+                "posting_date": row_dict.get("BUDAT"),
+                "currency": row_dict.get("WAERS"),
+                "company_code": row_dict.get("KKBER") or row_dict.get("BUKRS"),
+                "customer": row_dict.get("ACCNT"),
+                "bank_gl": row_dict.get("HKONT"),
+                "amount": amt,
+                "cust_amount": cust_amt,
+                "invoice_ref": row_dict.get("ZUONR") or row_dict.get("XBLNR"),
+                "bank_assignment": row_dict.get("ZUONR"),
+                "item_text": row_dict.get("SGTXT"),
+                "cust_text": row_dict.get("SGTXT"),
+                "doc_type": doc_type,
+                "_inferred_match_by": inferred_match_by,
+            }
+            items.append(raw)
+        return items
+
     col_idx = {EXCEL_COLUMNS[h]: i for i, h in enumerate(header) if h in EXCEL_COLUMNS}
-    missing = [h for h, f in EXCEL_COLUMNS.items() if f not in col_idx and h not in ("ZFBDT", "ZUONR_2", "SGTXT_1", "MONAT")]
+    missing = [
+        h
+        for h, f in EXCEL_COLUMNS.items()
+        if f not in col_idx and h not in ("ZFBDT", "ZUONR_2", "SGTXT_1", "MONAT")
+    ]
     if missing:
         raise ValueError(f"Excel header is missing columns: {', '.join(missing)}")
 
@@ -339,7 +456,9 @@ def normalise(raw: Dict[str, Any], defaults: Dict[str, str]) -> Dict[str, Any]:
         "amount_raw": raw.get("amount"),
         "amount": parse_amount(raw.get("amount")),
         "cust_amount_raw": raw.get("cust_amount"),
-        "cust_amount": parse_amount(raw.get("cust_amount")) if "cust_amount" in raw else None,
+        "cust_amount": parse_amount(raw.get("cust_amount"))
+        if "cust_amount" in raw
+        else None,
         "cust_posting_key": _text(raw.get("cust_posting_key")),
         "bank_posting_key": _text(raw.get("bank_posting_key")),
         "invoice_ref": _text(raw.get("invoice_ref")),
@@ -358,7 +477,9 @@ def validate(item: Dict[str, Any]) -> List[str]:
     if item["doc_date"] is None:
         errs.append(f"Invalid/missing document date: '{_text(item['doc_date_raw'])}'")
     if item["posting_date"] is None:
-        errs.append(f"Invalid/missing posting date: '{_text(item['posting_date_raw'])}'")
+        errs.append(
+            f"Invalid/missing posting date: '{_text(item['posting_date_raw'])}'"
+        )
     if not re.fullmatch(r"[A-Z0-9]{4}", item["company_code"]):
         errs.append(f"Invalid company code: '{item['company_code']}'")
     if not re.fullmatch(r"[A-Z]{3}", item["currency"]):
@@ -369,16 +490,26 @@ def validate(item: Dict[str, Any]) -> List[str]:
         errs.append("Bank G/L account is missing")
     if item["amount"] is None or item["amount"] <= 0:
         errs.append(f"Invalid bank amount: '{_text(item['amount_raw'])}'")
-    if item["cust_amount"] is not None and item["amount"] is not None and item["cust_amount"] != item["amount"]:
-        errs.append(f"Customer amount {item['cust_amount']} != bank amount {item['amount']} (Dr must equal Cr)")
+    if (
+        item["cust_amount"] is not None
+        and item["amount"] is not None
+        and item["cust_amount"] != item["amount"]
+    ):
+        errs.append(
+            f"Customer amount {item['cust_amount']} != bank amount {item['amount']} (Dr must equal Cr)"
+        )
     if item["cust_amount_raw"] is not None and item["cust_amount"] is None:
         errs.append(f"Invalid customer amount: '{_text(item['cust_amount_raw'])}'")
     if not item["invoice_ref"]:
         errs.append("Invoice reference is missing - nothing to clear")
-    if item["period"] and not (item["period"].isdigit() and 1 <= int(item["period"]) <= 16):
+    if item["period"] and not (
+        item["period"].isdigit() and 1 <= int(item["period"]) <= 16
+    ):
         errs.append(f"Invalid posting period: '{item['period']}'")
     if item["bank_posting_key"] and item["bank_posting_key"] != "40":
-        errs.append(f"Bank line posting key must be 40 (debit G/L), got '{item['bank_posting_key']}'")
+        errs.append(
+            f"Bank line posting key must be 40 (debit G/L), got '{item['bank_posting_key']}'"
+        )
     return errs
 
 
@@ -389,42 +520,71 @@ class OpenItemIndex:
         df = SAPODataExtractor().fetch_table_data("BSID")
         self.rows = df.to_dict("records") if not df.empty else []
 
-    def find(self, bukrs: str, kunnr: str, field: str, value: str) -> List[Dict[str, Any]]:
+    def find(
+        self, bukrs: str, kunnr: str, field: str, value: str
+    ) -> List[Dict[str, Any]]:
         key = field.lower()
         val = alpha(value) if field == "BELNR" else value.strip().upper()
         out = []
         for r in self.rows:
-            if str(r.get("bukrs", "")).upper() != bukrs or alpha(r.get("kunnr")) != kunnr:
+            if (
+                str(r.get("bukrs", "")).upper() != bukrs
+                or alpha(r.get("kunnr")) != kunnr
+            ):
                 continue
-            cand = alpha(r.get(key)) if field == "BELNR" else str(r.get(key) or "").strip().upper()
+            cand = (
+                alpha(r.get(key))
+                if field == "BELNR"
+                else str(r.get(key) or "").strip().upper()
+            )
             if cand and cand == val:
                 out.append(r)
         return out
 
 
-def check_open_items(item: Dict[str, Any], index: OpenItemIndex, match_by: str) -> Tuple[List[str], Dict[str, Any]]:
-    matches = index.find(item["company_code"], item["customer"], match_by, item["invoice_ref"])
+def check_open_items(
+    item: Dict[str, Any], index: OpenItemIndex, match_by: str
+) -> Tuple[List[str], Dict[str, Any]]:
+    matches = index.find(
+        item["company_code"], item["customer"], match_by, item["invoice_ref"]
+    )
     if not matches:
-        return [f"No open item in SAP for company {item['company_code']}, customer {item['customer']} "
-                f"with {match_by} = '{item['invoice_ref']}'"], {}
+        return [
+            f"No open item in SAP for company {item['company_code']}, customer {item['customer']} "
+            f"with {match_by} = '{item['invoice_ref']}'"
+        ], {}
 
     errs = []
     currencies = {str(m.get("waers", "")).upper() for m in matches}
     if currencies != {item["currency"]}:
-        errs.append(f"Currency mismatch: bank {item['currency']} vs open item {', '.join(sorted(currencies))}")
+        errs.append(
+            f"Currency mismatch: bank {item['currency']} vs open item {', '.join(sorted(currencies))}"
+        )
 
     open_amt = sum(
-        (Decimal(str(m.get("wrbtr") or 0)) * (1 if str(m.get("shkzg")) == "S" else -1) for m in matches),
+        (
+            Decimal(str(m.get("wrbtr") or 0))
+            * (1 if str(m.get("shkzg")) == "S" else -1)
+            for m in matches
+        ),
         Decimal("0"),
     ).quantize(Decimal("0.01"))
     if item["amount"] is not None and open_amt != item["amount"]:
-        errs.append(f"Amount mismatch: bank {item['amount']} vs open item(s) {open_amt} "
-                    f"(difference {item['amount'] - open_amt})")
+        errs.append(
+            f"Amount mismatch: bank {item['amount']} vs open item(s) {open_amt} "
+            f"(difference {item['amount'] - open_amt})"
+        )
 
     info = {
         "open_items": [
-            {"belnr": m.get("belnr"), "gjahr": str(m.get("gjahr")), "buzei": str(m.get("buzei")),
-             "xblnr": m.get("xblnr"), "amount": float(m.get("wrbtr") or 0), "dc": m.get("shkzg")}
+            {
+                "belnr": m.get("belnr"),
+                "gjahr": str(m.get("gjahr")),
+                "buzei": str(m.get("buzei")),
+                "xblnr": m.get("xblnr"),
+                "amount": float(m.get("wrbtr") or 0),
+                "dc": m.get("shkzg"),
+            }
             for m in matches
         ],
         "open_amount": float(open_amt),
@@ -452,14 +612,26 @@ class SAPBankPostingClient:
         self.s.verify = bool(sap.get("verify_ssl", False))
 
     def _call(self, fm: str, params: Dict[str, Any]) -> ET.Element:
-        body = "".join(f"<{k}>{xml_escape(str(v))}</{k}>" for k, v in params.items() if v not in (None, ""))
+        body = "".join(
+            f"<{k}>{xml_escape(str(v))}</{k}>"
+            for k, v in params.items()
+            if v not in (None, "")
+        )
         env = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" '
             f'xmlns:urn="{self.NS}"><soapenv:Body><urn:{fm}>{body}</urn:{fm}></soapenv:Body></soapenv:Envelope>'
         )
-        r = self.s.post(self.url, params=self.params, data=env.encode("utf-8"), timeout=self.timeout,
-                        headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": f"{self.NS}:{fm}"})
+        r = self.s.post(
+            self.url,
+            params=self.params,
+            data=env.encode("utf-8"),
+            timeout=self.timeout,
+            headers={
+                "Content-Type": "text/xml; charset=utf-8",
+                "SOAPAction": f"{self.NS}:{fm}",
+            },
+        )
         root = ET.fromstring(r.content) if r.content.strip().startswith(b"<") else None
         fault = root.find(".//faultstring") if root is not None else None
         if r.status_code != 200 or fault is not None:
@@ -529,22 +701,32 @@ def process_bank_posting(
     sheet_rows: Optional[List[tuple]] = None,
 ) -> Dict[str, Any]:
     cfg = load_bank_config()
-    match_by = (match_by or cfg["default_match_by"]).upper()
-    if match_by not in MATCH_FIELDS:
-        raise ValueError(f"match_by must be one of {MATCH_FIELDS}")
-    do_check = cfg["check_open_items"] if check_sap_open_items is None else check_sap_open_items
+    do_check = (
+        cfg["check_open_items"]
+        if check_sap_open_items is None
+        else check_sap_open_items
+    )
 
     if sheet_rows is not None:
         raw_items = bank_items_from_rows(sheet_rows)
     elif file_path:
         raw_items = read_excel(file_path, sheet, tenant_id=tenant_id, org_id=org_id)
     elif items:
-        raw_items = [{**it, "row": it.get("row", i)} for i, it in enumerate(items, start=1)]
+        raw_items = [
+            {**it, "row": it.get("row", i)} for i, it in enumerate(items, start=1)
+        ]
     else:
         raise ValueError("Provide either 'file_path' or 'items'")
 
+    inferred_match_by = raw_items[0].get("_inferred_match_by") if raw_items else None
+    match_by = (match_by or inferred_match_by or cfg["default_match_by"]).upper()
+    if match_by not in MATCH_FIELDS:
+        raise ValueError(f"match_by must be one of {MATCH_FIELDS}")
+
     batch_id = f"BNK{datetime.now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
-    logger.info(f"[BANK POST] {batch_id}: {len(raw_items)} row(s), dry_run={dry_run}, match_by={match_by}")
+    logger.info(
+        f"[BANK POST] {batch_id}: {len(raw_items)} row(s), dry_run={dry_run}, match_by={match_by}"
+    )
 
     index = None
     if do_check:
@@ -562,7 +744,9 @@ def process_bank_posting(
         errs = validate(item)
         key = (item["company_code"], item["customer"], item["invoice_ref"].upper())
         if not errs and key in seen:
-            errs.append("Duplicate row in this batch for the same company/customer/invoice")
+            errs.append(
+                "Duplicate row in this batch for the same company/customer/invoice"
+            )
         seen.add(key)
 
         extra: Dict[str, Any] = {}
@@ -605,15 +789,22 @@ def process_bank_posting(
                 d = client.post(f"{batch_id}-{n:04d}", item, match_by)
                 sap_st = d.get("Status")
                 success = sap_st == "S"
-                res.update({
-                    "status": {"S": "SUCCESS", "W": "POSTED_NOT_CLEARED"}.get(sap_st, "ERROR"),
-                    "document_no": d.get("Belnr") or None,
-                    "fiscal_year": d.get("Gjahr") or None,
-                    "clearing_doc": d.get("Augbl") or None,
-                    "clearing_date": d.get("Augdt"),
-                    "message": d.get("Message") or ("Posted" if success else "Unknown SAP error"),
-                })
-                logger.info(f"[BANK POST] row {res['row']}: {res['status']} {res['document_no']} - {res['message']}")
+                res.update(
+                    {
+                        "status": {"S": "SUCCESS", "W": "POSTED_NOT_CLEARED"}.get(
+                            sap_st, "ERROR"
+                        ),
+                        "document_no": d.get("Belnr") or None,
+                        "fiscal_year": d.get("Gjahr") or None,
+                        "clearing_doc": d.get("Augbl") or None,
+                        "clearing_date": d.get("Augdt"),
+                        "message": d.get("Message")
+                        or ("Posted" if success else "Unknown SAP error"),
+                    }
+                )
+                logger.info(
+                    f"[BANK POST] row {res['row']}: {res['status']} {res['document_no']} - {res['message']}"
+                )
 
     # Write SAP document number back to active_bt3i / active_bs (documentid)
     db_update: Dict[str, Any] = {"skipped": "dry_run" if dry_run else "disabled"}
@@ -621,12 +812,25 @@ def process_bank_posting(
         posted = []
         for r in results:
             if r["status"] in ("SUCCESS", "POSTED_NOT_CLEARED") and r["document_no"]:
-                posted.append({"assignment": r["invoice_ref"], "document_no": r["document_no"]})
+                if r.get("invoice_ref"):
+                    posted.append(
+                        {
+                            "assignment": r["invoice_ref"],
+                            "document_no": r["document_no"],
+                        }
+                    )
+                if r.get("customer"):
+                    posted.append(
+                        {"assignment": r["customer"], "document_no": r["document_no"]}
+                    )
                 if r.get("utr"):
-                    posted.append({"assignment": r["utr"], "document_no": r["document_no"]})
+                    posted.append(
+                        {"assignment": r["utr"], "document_no": r["document_no"]}
+                    )
         if posted:
             try:
                 from bank_posting.document_link import link_document_ids
+
                 db_update = link_document_ids(posted)
             except Exception as e:
                 logger.error(f"[BANK POST] documentid update failed: {e}")
@@ -651,6 +855,7 @@ def process_bank_posting(
         "results": results,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
+
 
 # ---------------------------------------------------------------------------
 # Entry point for API requests: bank or invoice file
@@ -681,27 +886,44 @@ def process_request(
         rows = load_sheet_rows(file_path, sheet, tenant_id=tenant_id, org_id=org_id)
         detected = detect_file_type(rows)
         if ftype and detected and ftype != detected:
-            raise ValueError(f"file_type is '{ftype}' but the Excel columns look like a {detected} file")
+            raise ValueError(
+                f"file_type is '{ftype}' but the Excel columns look like a {detected} file"
+            )
         ftype = ftype or detected
         if not ftype:
-            raise ValueError("Could not tell if this is a bank or invoice file from its header; "
-                             "set file_type to 'bank' or 'invoice'")
+            raise ValueError(
+                "Could not tell if this is a bank or invoice file from its header; "
+                "set file_type to 'bank' or 'invoice'"
+            )
     ftype = ftype or "bank"
 
     if ftype == "invoice":
         from bank_posting.invoice import process_invoice_file
+
         return process_invoice_file(
-            sheet_rows=rows, items=None if rows is not None else items,
-            source=file_path or "json", dry_run=dry_run, match_by=match_by,
-            update_db=update_db, company_code=company_code,
+            sheet_rows=rows,
+            items=None if rows is not None else items,
+            source=file_path or "json",
+            dry_run=dry_run,
+            match_by=match_by,
+            update_db=update_db,
+            company_code=company_code,
         )
 
     res = process_bank_posting(
-        file_path=file_path, items=items, sheet=sheet, dry_run=dry_run, match_by=match_by,
-        check_sap_open_items=check_sap_open_items, update_db=update_db,
-        tenant_id=tenant_id, org_id=org_id, sheet_rows=rows,
+        file_path=file_path,
+        items=items,
+        sheet=sheet,
+        dry_run=dry_run,
+        match_by=match_by,
+        check_sap_open_items=check_sap_open_items,
+        update_db=update_db,
+        tenant_id=tenant_id,
+        org_id=org_id,
+        sheet_rows=rows,
     )
     return {"file_type": "bank", **res}
+
 
 if __name__ == "__main__":
     import argparse, json
@@ -713,6 +935,11 @@ if __name__ == "__main__":
     p.add_argument("--match-by", choices=MATCH_FIELDS)
     p.add_argument("--no-sap-check", action="store_true")
     a = p.parse_args()
-    out = process_bank_posting(a.file_path, sheet=a.sheet, dry_run=a.dry_run, match_by=a.match_by,
-                               check_sap_open_items=not a.no_sap_check)
+    out = process_bank_posting(
+        a.file_path,
+        sheet=a.sheet,
+        dry_run=a.dry_run,
+        match_by=a.match_by,
+        check_sap_open_items=not a.no_sap_check,
+    )
     print(json.dumps(out, indent=2, default=str))

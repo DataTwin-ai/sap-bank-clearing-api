@@ -59,10 +59,25 @@ Request body for `POST /api/bank/post` (send **either** `items` **or** `file_pat
 | `check_open_items` | from config | Validate against live SAP BSID before posting |
 | `update_db` | `true` | Write document numbers to `active_bt3i` / `active_bs` |
 
+### Authorization
+
+All `/api/bank/*` endpoints require an API key in the `X-API-Key` header
+(`/health`, `/docs` and `/redoc` stay open). Keys are configured as a
+comma-separated list in `config.ini` → `[auth] api_keys`, or in the `API_KEYS`
+environment variable (which takes precedence). Missing/wrong key → `401`;
+no key configured on the server → `503`. In Swagger UI use the **Authorize** button.
+
+Generate a key:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
 Example (dry run):
 
 ```bash
 curl -X POST http://localhost:8000/api/bank/post \
+  -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"dry_run": true, "items": [{"company_code":"DAT1","customer":"30000001","bank_gl":"410000",
        "amount":1858500.0,"currency":"INR","invoice_ref":"0090000057","utr":"UTR123456789",
@@ -104,6 +119,7 @@ All settings live in `config.ini` at the project root (copy `config.example.ini`
 | `[defaults]` | `tenant_id`, `org_id` |
 | `[sap]` | SAP host/port/client/user/password, OData service, TLS, timeouts |
 | `[bank_posting]` | RFC name, default doc type, match field, open-item check |
+| `[auth]` | `api_keys` – comma-separated keys accepted in `X-API-Key` |
 
 SAP settings can also be given as environment variables (`SAP_HOST`, `SAP_PORT`,
 `SAP_CLIENT`, `SAP_USER`, `SAP_PASSWORD`, …), which take precedence over `config.ini`.

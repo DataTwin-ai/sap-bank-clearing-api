@@ -74,6 +74,8 @@ Row statuses in the response: `VALID`, `INVALID`, `SUCCESS`, `POSTED_NOT_CLEARED
 ### Bank vs invoice files
 
 `file_type` selects the flow; when omitted it is detected from the Excel header.
+`match_by` is optional: bank files default to `XBLNR` (config `default_match_by`), invoice files
+check both `XBLNR` and `ZUONR`. Send it only to match on `ZUONR` or `BELNR` instead.
 
 | `file_type` | Excel layout | SAP checks | DB update (`dry_run: false`) |
 |---|---|---|---|
@@ -85,7 +87,7 @@ With `tenant_id` + `org_id`, `file_path` is read from S3:
 
 ```json
 { "file_type": "bank",    "file_path": "SAP/BANK EXCEL SHEET.xlsx", "sheet": "F-30 Upload",
-  "dry_run": true, "match_by": "XBLNR", "tenant_id": "DM00005", "org_id": "OM0000000001" }
+  "dry_run": true, "tenant_id": "DM00005", "org_id": "OM0000000001" }
 
 { "file_type": "invoice", "file_path": "SAP/Invoice Excel.xlsx",    "sheet": "FB70_Upload",
   "company_code": "DAT1", "dry_run": true, "tenant_id": "DM00005", "org_id": "OM0000000001" }

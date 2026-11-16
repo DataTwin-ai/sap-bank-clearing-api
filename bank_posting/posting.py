@@ -283,12 +283,12 @@ def resolve_excel_path(file_path: str) -> Path:
     )
 
 
-def read_excel(
+def load_sheet_rows(
     file_path: str,
     sheet: Optional[str] = None,
     tenant_id: Optional[str] = None,
     org_id: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+) -> List[tuple]:
     import openpyxl
 
     if tenant_id and not parse_s3_uri(file_path):

@@ -45,7 +45,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from bank_posting.auth import require_api_key  # noqa: E402
-from bank_posting.posting import data_dir, logger, process_bank_posting  # noqa: E402
+from bank_posting.posting import data_dir, logger, process_bank_posting, process_request  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

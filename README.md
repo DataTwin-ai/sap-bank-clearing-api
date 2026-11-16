@@ -71,6 +71,26 @@ curl -X POST http://localhost:8000/api/bank/post \
 
 Row statuses in the response: `VALID`, `INVALID`, `SUCCESS`, `POSTED_NOT_CLEARED`, `ERROR`, `NOT_POSTED`.
 
+### Bank vs invoice files
+
+`file_type` selects the flow; when omitted it is detected from the Excel header.
+
+| `file_type` | Excel layout | SAP checks | DB update (`dry_run: false`) |
+|---|---|---|---|
+| `bank` | F-30, 17 columns (`NEWBS_2`, `NEWKO_2`, …) | format, open invoice in BSID (company, customer, reference, currency, amount); then post + clear via `Z_BANK_POST_CLEAR` | `active_bt3i` + `active_bs` `documentid` = new SAP document |
+| `invoice` | FB70, 11 columns (`BUSCS`, `ACCNT`, `HKONT`, `ZUONR`, …) | format, customer in KNA1 (not blocked / deleted) and KNB1 for `company_code`, invoice found in BSID (open) or BSAD (cleared) by reference; currency and amount must match | `active_bt3i.documentid` = SAP invoice document number |
+
+With `tenant_id` + `org_id`, `file_path` is read from S3:
+`s3://dt-<tenant>-<env>/<org_id>/<file_path without drive>`.
+
+```json
+{ "file_type": "bank",    "file_path": "SAP/BANK EXCEL SHEET.xlsx", "sheet": "F-30 Upload",
+  "dry_run": true, "match_by": "XBLNR", "tenant_id": "DM00005", "org_id": "OM0000000001" }
+
+{ "file_type": "invoice", "file_path": "SAP/Invoice Excel.xlsx",    "sheet": "FB70_Upload",
+  "company_code": "DAT1", "dry_run": true, "tenant_id": "DM00005", "org_id": "OM0000000001" }
+```
+
 ## Configuration
 
 All settings live in `config.ini` at the project root (copy `config.example.ini`):

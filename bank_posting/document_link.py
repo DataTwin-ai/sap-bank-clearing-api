@@ -89,9 +89,11 @@ def _update_documentid(cur, table: str, pk: List[str], rows: pd.DataFrame) -> in
     return cur.rowcount
 
 
-def link_document_ids(posted: List[Dict[str, Any]], env: Optional[str] = None) -> Dict[str, Any]:
+def link_document_ids(posted: List[Dict[str, Any]], env: Optional[str] = None,
+                      invoices: bool = True, bank: bool = True) -> Dict[str, Any]:
     """
     posted: [{"assignment": <invoice ref / UTR>, "document_no": <SAP doc>}, ...]
+    invoices / bank: which table(s) to update (active_bt3i / active_bs).
     Returns counts and the matched keys.
     """
     src = pd.DataFrame(
@@ -102,12 +104,13 @@ def link_document_ids(posted: List[Dict[str, Any]], env: Optional[str] = None) -
         return {"invoices_updated": 0, "bank_updated": 0, "message": "nothing to link"}
 
     engine = get_engine(env)
+    empty = pd.DataFrame(columns=["documentnumber", "transactionref", "documentid"])
     inv_result = pd.read_sql_query(
         f"select * from {INV_TABLE} where transactiontype = 'Invoice' and documentid is null", engine
-    )
+    ) if invoices else empty
     bank_result = pd.read_sql_query(
         f"select * from {BANK_TABLE} where transactiontype = 'Bank' and documentid is null", engine
-    )
+    ) if bank else empty
 
     matched_inv, matched_bank = connect_document_id(df=src, inv_result=inv_result, bank=bank_result)
 

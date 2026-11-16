@@ -42,7 +42,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from bank_posting.posting import data_dir, logger, process_bank_posting  # noqa: E402
+from bank_posting.posting import data_dir, logger, process_request  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -108,12 +108,20 @@ class BankPostingItem(BaseModel):
 
 
 class BankPostingRequest(BaseModel):
+    file_type: Optional[str] = Field(
+        default=None,
+        description=(
+            "'bank' (F-30 file: validate, post + clear in SAP, update DB) or "
+            "'invoice' (FB70 file: validate customer + invoice in SAP, update DB). "
+            "If omitted it is detected from the Excel header."
+        ),
+    )
     file_path: Optional[str] = Field(
         default=None,
         description=(
             "Excel file: an S3 location (s3://bucket/key or https://bucket.s3.amazonaws.com/key), "
             "or a path on the server. If a path does not exist on the server, a file with the "
-            "same name in the server data folder is used (e.g. C:\SAP\log\BANK.xlsx -> data/BANK.xlsx)."
+            "same name in the server data folder is used (e.g. C:/SAP/log/BANK.xlsx -> data/BANK.xlsx)."
         ),
         example="data/BANK EXCEL SHEET.xlsx" if not PYDANTIC_V2 else None,
     )
@@ -126,9 +134,15 @@ class BankPostingRequest(BaseModel):
         description="Run validation against SAP open items without posting",
     )
     match_by: Optional[str] = Field(
-        default="XBLNR",
-        description="SAP invoice matching field: XBLNR | ZUONR | BELNR",
-        example="XBLNR" if not PYDANTIC_V2 else None,
+        default=None,
+        description=(
+            "SAP field the invoice reference is matched on. Bank: XBLNR | ZUONR | BELNR "
+            "(default from config, XBLNR). Invoice: ANY | XBLNR | ZUONR | BELNR (default ANY = XBLNR or ZUONR)."
+        ),
+    )
+    company_code: Optional[str] = Field(
+        default=None,
+        description="Invoice files only: company code to check (the FB70 file has no company code column)",
     )
     check_open_items: Optional[bool] = Field(
         default=None,
@@ -155,11 +169,24 @@ class BankPostingRequest(BaseModel):
         model_config = ConfigDict(
             json_schema_extra={
                 "example": {
-                    "file_path": "C:\SAP\BANK EXCEL SHEET.xlsx",
+                    "file_type": "bank",
+                    "file_path": "SAP/BANK EXCEL SHEET.xlsx",
                     "sheet": "F-30 Upload",
+                    "dry_run": True,
+                    "update_db": True,
+                    "match_by": "XBLNR",
                     "tenant_id": "DM00005",
                     "org_id": "OM0000000001",
+                },
+                "example_invoice": {
+                    "file_type": "invoice",
+                    "file_path": "SAP/Invoice Excel.xlsx",
+                    "sheet": "FB70_Upload",
+                    "company_code": "DAT1",
                     "dry_run": True,
+                    "update_db": True,
+                    "tenant_id": "DM00005",
+                    "org_id": "OM0000000001",
                 },
                 "example_items": {
                     "dry_run": True,
@@ -187,11 +214,24 @@ class BankPostingRequest(BaseModel):
         class Config:
             schema_extra = {
                 "example": {
-                    "file_path": "C:\SAP\BANK EXCEL SHEET.xlsx",
+                    "file_type": "bank",
+                    "file_path": "SAP/BANK EXCEL SHEET.xlsx",
                     "sheet": "F-30 Upload",
+                    "dry_run": True,
+                    "update_db": True,
+                    "match_by": "XBLNR",
                     "tenant_id": "DM00005",
                     "org_id": "OM0000000001",
+                },
+                "example_invoice": {
+                    "file_type": "invoice",
+                    "file_path": "SAP/Invoice Excel.xlsx",
+                    "sheet": "FB70_Upload",
+                    "company_code": "DAT1",
                     "dry_run": True,
+                    "update_db": True,
+                    "tenant_id": "DM00005",
+                    "org_id": "OM0000000001",
                 },
                 "example_items": {
                     "dry_run": True,
@@ -388,17 +428,22 @@ async def health():
         500: {"model": ErrorResponse, "description": "Server or SAP error"},
     },
     tags=["Bank Posting"],
-    summary="Post Bank Receipt with Clearing",
+    summary="Process Bank or Invoice File",
     description=(
-        "Accepts either an Excel `file_path` on the server or a direct list of `items`. "
-        "Validates line items against live SAP BSID open items, calls `Z_BANK_POST_CLEAR`, "
-        "and updates the database tables with the resulting SAP document numbers."
+        "Accepts an Excel `file_path` (S3 / server) or a list of `items`.\n\n"
+        "* `file_type: bank` (F-30 layout): validates against live SAP open items (BSID), posts + clears via "
+        "`Z_BANK_POST_CLEAR`, writes SAP document numbers to `active_bt3i` / `active_bs`.\n"
+        "* `file_type: invoice` (FB70 layout): validates customer (KNA1/KNB1) and finds the invoice in SAP "
+        "(BSID/BSAD), writes the SAP invoice document number to `active_bt3i`.\n\n"
+        "`file_type` is detected from the Excel header when omitted. `dry_run: true` = validate only."
     ),
 )
 async def bank_post(payload: BankPostingRequest):
     try:
         res = await run_in_threadpool(
-            process_bank_posting,
+            process_request,
+            file_type=payload.file_type,
+            company_code=payload.company_code,
             file_path=payload.file_path,
             items=payload.items,
             sheet=payload.sheet,
@@ -429,20 +474,20 @@ _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ -]")
         500: {"model": ErrorResponse, "description": "Server or SAP error"},
     },
     tags=["Bank Posting"],
-    summary="Upload Excel, Validate, Post and Update DB",
+    summary="Upload Bank or Invoice Excel, Validate and Update DB",
     description=(
-        "Upload the bank Excel file (17 columns, same as ZFI_BANK_PROGRAM). The file is saved in the "
-        "server data folder, validated against live SAP open items, posted + cleared via "
-        "`Z_BANK_POST_CLEAR` and the SAP document numbers are written to the database. "
-        "Set `dry_run=true` to validate only."
+        "Upload a bank (F-30) or invoice (FB70) Excel file. The file is saved in the server data folder "
+        "and processed exactly like `POST /api/bank/post`. Set `dry_run=true` to validate only."
     ),
 )
 async def bank_upload(
     file: UploadFile = File(..., description="Excel file (.xlsx)"),
+    file_type: Optional[str] = Form(None, description="bank | invoice (default: detected from header)"),
     sheet: Optional[str] = Form(None, description="Sheet name (default: first sheet)"),
     dry_run: bool = Form(False, description="true = validate only, no SAP posting / DB update"),
-    match_by: str = Form("XBLNR", description="XBLNR | ZUONR | BELNR"),
+    match_by: Optional[str] = Form(None, description="Bank: XBLNR | ZUONR | BELNR. Invoice: ANY | XBLNR | ZUONR | BELNR"),
     update_db: bool = Form(True, description="Write SAP document numbers to active_bt3i / active_bs"),
+    company_code: Optional[str] = Form(None, description="Invoice files: company code to check"),
 ):
     name = _SAFE_NAME.sub("_", Path(file.filename or "upload.xlsx").name)
     if not name.lower().endswith((".xlsx", ".xlsm")):
@@ -455,12 +500,14 @@ async def bank_upload(
     logger.info(f"[BANK UPLOAD] saved {target}")
     try:
         return await run_in_threadpool(
-            process_bank_posting,
+            process_request,
+            file_type=file_type or None,
             file_path=str(target),
             sheet=sheet or None,
             dry_run=dry_run,
-            match_by=match_by,
+            match_by=match_by or None,
             update_db=update_db,
+            company_code=company_code or None,
         )
     except (ValueError, FileNotFoundError) as e:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"status": "error", "message": str(e)})

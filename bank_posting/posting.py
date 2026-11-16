@@ -252,8 +252,9 @@ def resolve_excel_path(file_path: str) -> Path:
     )
 
 
-def read_excel(file_path: str, sheet: Optional[str] = None,
-               tenant_id: Optional[str] = None, org_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def load_sheet_rows(file_path: str, sheet: Optional[str] = None,
+                    tenant_id: Optional[str] = None, org_id: Optional[str] = None) -> List[tuple]:
+    """Fetch the Excel (S3 / server path) and return all rows of the chosen sheet."""
     import openpyxl
 
     if tenant_id and not parse_s3_uri(file_path):
@@ -277,10 +278,36 @@ def read_excel(file_path: str, sheet: Optional[str] = None,
         raise ValueError(f"Sheet '{sheet}' not found in {path.name}. Available sheets: {names}")
     rows = list(ws.iter_rows(values_only=True))
     wb.close()
+    return rows
+
+
+def header_of(rows: List[tuple]) -> List[str]:
+    return [re.sub(r"[^A-Z0-9_]", "", str(h or "").upper()) for h in (rows[0] if rows else ())]
+
+
+FILE_TYPES = ("bank", "invoice")
+
+
+def detect_file_type(rows: List[tuple]) -> Optional[str]:
+    """bank = F-30 layout (NEWBS_2 / NEWKO_2), invoice = FB70 layout (BUSCS / ACCNT / HKONT)."""
+    header = set(header_of(rows))
+    if {"NEWKO_2", "WRBTR_2"} <= header:
+        return "bank"
+    if {"ACCNT", "HKONT"} <= header:
+        return "invoice"
+    return None
+
+
+def read_excel(file_path: str, sheet: Optional[str] = None,
+               tenant_id: Optional[str] = None, org_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    return bank_items_from_rows(load_sheet_rows(file_path, sheet, tenant_id, org_id))
+
+
+def bank_items_from_rows(rows: List[tuple]) -> List[Dict[str, Any]]:
     if not rows:
         return []
 
-    header = [re.sub(r"[^A-Z0-9_]", "", str(h or "").upper()) for h in rows[0]]
+    header = header_of(rows)
     col_idx = {EXCEL_COLUMNS[h]: i for i, h in enumerate(header) if h in EXCEL_COLUMNS}
     missing = [h for h, f in EXCEL_COLUMNS.items() if f not in col_idx and h not in ("ZFBDT", "ZUONR_2", "SGTXT_1", "MONAT")]
     if missing:
@@ -499,6 +526,7 @@ def process_bank_posting(
     update_db: bool = True,
     tenant_id: Optional[str] = None,
     org_id: Optional[str] = None,
+    sheet_rows: Optional[List[tuple]] = None,
 ) -> Dict[str, Any]:
     cfg = load_bank_config()
     match_by = (match_by or cfg["default_match_by"]).upper()
@@ -506,7 +534,9 @@ def process_bank_posting(
         raise ValueError(f"match_by must be one of {MATCH_FIELDS}")
     do_check = cfg["check_open_items"] if check_sap_open_items is None else check_sap_open_items
 
-    if file_path:
+    if sheet_rows is not None:
+        raw_items = bank_items_from_rows(sheet_rows)
+    elif file_path:
         raw_items = read_excel(file_path, sheet, tenant_id=tenant_id, org_id=org_id)
     elif items:
         raw_items = [{**it, "row": it.get("row", i)} for i, it in enumerate(items, start=1)]
@@ -622,6 +652,56 @@ def process_bank_posting(
         "timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
+# ---------------------------------------------------------------------------
+# Entry point for API requests: bank or invoice file
+# ---------------------------------------------------------------------------
+def process_request(
+    file_type: Optional[str] = None,
+    file_path: Optional[str] = None,
+    items: Optional[List[Dict[str, Any]]] = None,
+    sheet: Optional[str] = None,
+    dry_run: bool = False,
+    match_by: Optional[str] = None,
+    check_sap_open_items: Optional[bool] = None,
+    update_db: bool = True,
+    tenant_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+    company_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    file_type: "bank" (F-30 receipt + clearing) or "invoice" (FB70 invoice validation).
+    If omitted, it is detected from the Excel header (or assumed "bank" for items).
+    """
+    ftype = (file_type or "").strip().lower() or None
+    if ftype and ftype not in FILE_TYPES:
+        raise ValueError(f"file_type must be one of {FILE_TYPES}")
+
+    rows: Optional[List[tuple]] = None
+    if file_path:
+        rows = load_sheet_rows(file_path, sheet, tenant_id=tenant_id, org_id=org_id)
+        detected = detect_file_type(rows)
+        if ftype and detected and ftype != detected:
+            raise ValueError(f"file_type is '{ftype}' but the Excel columns look like a {detected} file")
+        ftype = ftype or detected
+        if not ftype:
+            raise ValueError("Could not tell if this is a bank or invoice file from its header; "
+                             "set file_type to 'bank' or 'invoice'")
+    ftype = ftype or "bank"
+
+    if ftype == "invoice":
+        from bank_posting.invoice import process_invoice_file
+        return process_invoice_file(
+            sheet_rows=rows, items=None if rows is not None else items,
+            source=file_path or "json", dry_run=dry_run, match_by=match_by,
+            update_db=update_db, company_code=company_code,
+        )
+
+    res = process_bank_posting(
+        file_path=file_path, items=items, sheet=sheet, dry_run=dry_run, match_by=match_by,
+        check_sap_open_items=check_sap_open_items, update_db=update_db,
+        tenant_id=tenant_id, org_id=org_id, sheet_rows=rows,
+    )
+    return {"file_type": "bank", **res}
 
 if __name__ == "__main__":
     import argparse, json

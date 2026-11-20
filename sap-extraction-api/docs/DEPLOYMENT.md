@@ -29,7 +29,7 @@ All four must be true, or the worker keeps rows PENDING and sends nothing.
 
 | # | Prerequisite | How to check |
 | --- | --- | --- |
-| 1 | The ingestion service at `https://lv.datatwin.ai/data-model-ingestion` runs repo `DataTwin-ai/data_modelling-ingestion`, branch `feature/dual-source-api-incremental-export`: commit `4d98030` (caller-routed process / theme) plus the follow-up change in `app.py` (SNO taken from the theme as the row key, header / item context ID shared between `active_bt3h` and `active_bt3i`) | `curl -s https://lv.datatwin.ai/data-model-ingestion/openapi.json` lists `process_code`, `transaction_type`, `theme_name` in `TableIngestRequest` |
+| 1 | The ingestion service at `https://lv.datatwin.ai/data-model-ingestion` runs repo `DataTwin-ai/data_modelling-ingestion`, branch `feature/dual-source-api-incremental-export`: commits `4d98030` (caller-routed process / theme) and `40e2acc` (SNO from the theme as the row key, one context ID for a header in `active_bt3h` and its items in `active_bt3i`) | `curl -s https://lv.datatwin.ai/data-model-ingestion/openapi.json` lists `process_code`, `transaction_type`, `theme_name` in `TableIngestRequest` |
 | 2 | Themes `SAP_BSID_INV`, `SAP_BSAD_CA`, `SAP_VBRK_SI`, `SAP_VBRP_SI` exist in the target DB | Run `deploy/sql/bt3h_sap_themes.sql` and `deploy/sql/sales_invoice_themes.sql` (already done on dev `dm00005`) |
 | 3 | `active_bt3h` has the 5 extra columns | Run `deploy/sql/bt3h_columns.sql` (already done on dev `dm00005`) |
 | 4 | The server can reach SAP OData and PostgreSQL (hosts and ports in `config.ini` `[sap]` and `[development]` / `[production]`), and the ingestion service can reach the same PostgreSQL | `install.sh` step 4 runs `cli.py check` |

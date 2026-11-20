@@ -88,6 +88,36 @@ def load_bank_config() -> Dict[str, str]:
     }
 
 
+# SAP tables the validation can use. List them in [sap] tables (config.ini).
+# BSID is always read; each other table adds its check when listed.
+SAP_TABLE_RULES = {
+    "BSID": "open customer items: the invoice must be open",
+    "BSAD": "cleared customer items: say when the invoice is already cleared",
+    "KNA1": "customer master: customer exists, not blocked / flagged for deletion",
+    "KNB1": "customer per company code: customer is created for the company code",
+}
+
+
+def configured_sap_tables() -> Tuple[List[str], List[str]]:
+    """Read [sap] tables. Returns (tables with a validation rule, tables without one)."""
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_PATH, encoding="utf-8")
+    raw = cfg.get("sap", "tables", fallback="BSID")
+    names: List[str] = []
+    for t in re.split(r"[,\s;]+", raw):
+        t = t.strip().upper()
+        if t and t not in names:
+            names.append(t)
+    used = ["BSID"] + [t for t in names if t in SAP_TABLE_RULES and t != "BSID"]
+    ignored = [t for t in names if t not in SAP_TABLE_RULES]
+    if ignored:
+        logger.warning(
+            f"[sap] tables: no validation rule for {', '.join(ignored)} - not read "
+            f"(supported: {', '.join(SAP_TABLE_RULES)})"
+        )
+    return used, ignored
+
+
 def _s3_suffix() -> str:
     cfg = configparser.ConfigParser()
     cfg.read(CONFIG_PATH, encoding="utf-8")
@@ -436,6 +466,9 @@ def bank_items_from_rows(rows: List[tuple]) -> List[Dict[str, Any]]:
             continue
         raw = {f: (values[i] if i < len(values) else None) for f, i in col_idx.items()}
         raw["row"] = excel_row
+        # ZUONR_2 (assignment on the bank line) is the bank reference / UTR:
+        # SAP duplicate check (BKPF-XBLNR) and active_bs.transactionref match
+        raw["utr"] = raw.get("bank_assignment")
         items.append(raw)
     return items
 
@@ -502,6 +535,10 @@ def validate(item: Dict[str, Any]) -> List[str]:
         errs.append(f"Invalid customer amount: '{_text(item['cust_amount_raw'])}'")
     if not item["invoice_ref"]:
         errs.append("Invoice reference is missing - nothing to clear")
+    if len(item["utr"]) > 16:
+        errs.append(
+            f"UTR '{item['utr']}' is {len(item['utr'])} characters; SAP reference (XBLNR) allows 16"
+        )
     if item["period"] and not (
         item["period"].isdigit() and 1 <= int(item["period"]) <= 16
     ):
@@ -513,20 +550,71 @@ def validate(item: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def _records(extractor: SAPODataExtractor, table: str) -> List[Dict[str, Any]]:
+    df = extractor.fetch_table_data(table)
+    return df.to_dict("records") if not df.empty else []
+
+
+class CustomerIndex:
+    """Customer master (KNA1) and company-code data (KNB1) from SAP."""
+
+    def __init__(self, extractor: SAPODataExtractor, kna1: bool = True, knb1: bool = True):
+        self.kna1 = (
+            {alpha(r.get("kunnr")): r for r in _records(extractor, "KNA1")} if kna1 else None
+        )
+        self.knb1 = (
+            {
+                (str(r.get("bukrs", "")).upper(), alpha(r.get("kunnr"))): r
+                for r in _records(extractor, "KNB1")
+            }
+            if knb1
+            else None
+        )
+
+    def check(self, kunnr: str, bukrs: str) -> List[str]:
+        errs: List[str] = []
+        if self.kna1 is not None:
+            cust = self.kna1.get(kunnr)
+            if not cust:
+                return [f"Customer {kunnr} does not exist in SAP (KNA1)"]
+            if _text(cust.get("loevm")):
+                errs.append(f"Customer {kunnr} is flagged for deletion in SAP")
+            if _text(cust.get("sperr")):
+                errs.append(f"Customer {kunnr} is blocked for posting in SAP")
+        if self.knb1 is not None and bukrs:
+            cc = self.knb1.get((bukrs, kunnr))
+            if not cc:
+                errs.append(f"Customer {kunnr} is not created for company code {bukrs} (KNB1)")
+            elif _text(cc.get("sperr")):
+                errs.append(f"Customer {kunnr} is blocked for posting in company code {bukrs}")
+        return errs
+
+
 class OpenItemIndex:
-    """Live open customer items (BSID) from SAP, fetched once per request."""
+    """
+    Customer items from SAP, fetched once per request.
+    tables: BSID (open, always), BSAD (cleared), KNA1 / KNB1 (customer checks).
+    """
 
-    def __init__(self):
-        df = SAPODataExtractor().fetch_table_data("BSID")
-        self.rows = df.to_dict("records") if not df.empty else []
+    def __init__(self, tables: Optional[List[str]] = None):
+        tables = tables or ["BSID"]
+        x = SAPODataExtractor()
+        self.rows = _records(x, "BSID")
+        self.cleared = _records(x, "BSAD") if "BSAD" in tables else None
+        self.customers = (
+            CustomerIndex(x, kna1="KNA1" in tables, knb1="KNB1" in tables)
+            if "KNA1" in tables or "KNB1" in tables
+            else None
+        )
 
-    def find(
-        self, bukrs: str, kunnr: str, field: str, value: str
+    @staticmethod
+    def _match(
+        rows: List[Dict[str, Any]], bukrs: str, kunnr: str, field: str, value: str
     ) -> List[Dict[str, Any]]:
         key = field.lower()
         val = alpha(value) if field == "BELNR" else value.strip().upper()
         out = []
-        for r in self.rows:
+        for r in rows:
             if (
                 str(r.get("bukrs", "")).upper() != bukrs
                 or alpha(r.get("kunnr")) != kunnr
@@ -541,20 +629,58 @@ class OpenItemIndex:
                 out.append(r)
         return out
 
+    def find(
+        self, bukrs: str, kunnr: str, field: str, value: str
+    ) -> List[Dict[str, Any]]:
+        return self._match(self.rows, bukrs, kunnr, field, value)
+
+    def find_cleared(
+        self, bukrs: str, kunnr: str, field: str, value: str
+    ) -> List[Dict[str, Any]]:
+        """Cleared invoice lines (BSAD, debit) - empty when BSAD is not configured."""
+        if not self.cleared:
+            return []
+        rows = [r for r in self.cleared if str(r.get("shkzg")) == "S"]
+        return self._match(rows, bukrs, kunnr, field, value)
+
 
 def check_open_items(
     item: Dict[str, Any], index: OpenItemIndex, match_by: str
 ) -> Tuple[List[str], Dict[str, Any]]:
+    errs: List[str] = []
+    if index.customers is not None:
+        errs.extend(index.customers.check(item["customer"], item["company_code"]))
+
     matches = index.find(
         item["company_code"], item["customer"], match_by, item["invoice_ref"]
     )
     if not matches:
-        return [
+        cleared = index.find_cleared(
+            item["company_code"], item["customer"], match_by, item["invoice_ref"]
+        )
+        if cleared:
+            docs = sorted(
+                {
+                    (str(m.get("belnr")), str(m.get("gjahr")),
+                     _text(m.get("augbl")), _text(m.get("augdt")))
+                    for m in cleared
+                }
+            )
+            errs.append(
+                f"Invoice '{item['invoice_ref']}' is already cleared in SAP: "
+                + ", ".join(f"document {b}/{y} cleared by {c} on {d}" for b, y, c, d in docs)
+            )
+            return errs, {
+                "cleared_items": [
+                    {"belnr": b, "gjahr": y, "augbl": c, "augdt": d} for b, y, c, d in docs
+                ]
+            }
+        errs.append(
             f"No open item in SAP for company {item['company_code']}, customer {item['customer']} "
             f"with {match_by} = '{item['invoice_ref']}'"
-        ], {}
+        )
+        return errs, {}
 
-    errs = []
     currencies = {str(m.get("waers", "")).upper() for m in matches}
     if currencies != {item["currency"]}:
         errs.append(
@@ -728,12 +854,17 @@ def process_bank_posting(
         f"[BANK POST] {batch_id}: {len(raw_items)} row(s), dry_run={dry_run}, match_by={match_by}"
     )
 
+    sap_tables, ignored_tables = configured_sap_tables()
     index = None
     if do_check:
         try:
-            index = OpenItemIndex()
+            index = OpenItemIndex(sap_tables)
         except Exception as e:
-            raise RuntimeError(f"Could not read open items (BSID) from SAP: {e}") from e
+            raise RuntimeError(
+                f"Could not read {', '.join(sap_tables)} from SAP: {e}"
+            ) from e
+    else:
+        sap_tables = []
 
     results: List[Dict[str, Any]] = []
     prepared: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
@@ -819,10 +950,6 @@ def process_bank_posting(
                             "document_no": r["document_no"],
                         }
                     )
-                if r.get("customer"):
-                    posted.append(
-                        {"assignment": r["customer"], "document_no": r["document_no"]}
-                    )
                 if r.get("utr"):
                     posted.append(
                         {"assignment": r["utr"], "document_no": r["document_no"]}
@@ -849,6 +976,7 @@ def process_bank_posting(
         "match_by": match_by,
         "source": file_path or "json",
         "sap_posting": sap_status,
+        "sap_tables": {"used": sap_tables, "ignored": ignored_tables},
         "total": len(results),
         "summary": counts,
         "db_update": db_update,

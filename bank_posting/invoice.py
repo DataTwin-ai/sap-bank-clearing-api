@@ -29,8 +29,10 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from bank_posting.posting import (
+    CustomerIndex,
     _text,
     alpha,
+    configured_sap_tables,
     header_of,
     logger,
     parse_amount,
@@ -133,15 +135,12 @@ def validate_invoice(item: Dict[str, Any]) -> Tuple[List[str], List[str]]:
 # SAP lookups (fetched once per request)
 # ---------------------------------------------------------------------------
 class SAPInvoiceIndex:
+    # An invoice check always needs all four tables, whatever [sap] tables lists.
+    TABLES = ["KNA1", "KNB1", "BSID", "BSAD"]
+
     def __init__(self):
         x = SAPODataExtractor()
-        self.customers: Dict[str, Dict[str, Any]] = {}
-        for r in x.fetch_table_data("KNA1").to_dict("records"):
-            self.customers[alpha(r.get("kunnr"))] = r
-        self.company_customers = {
-            (str(r.get("bukrs", "")).upper(), alpha(r.get("kunnr"))): r
-            for r in x.fetch_table_data("KNB1").to_dict("records")
-        }
+        self.customers = CustomerIndex(x)
         self.items: List[Dict[str, Any]] = []
         for table, state in (("BSID", "OPEN"), ("BSAD", "CLEARED")):
             for r in x.fetch_table_data(table).to_dict("records"):
@@ -149,21 +148,7 @@ class SAPInvoiceIndex:
                 self.items.append(r)
 
     def check_customer(self, kunnr: str, bukrs: str) -> List[str]:
-        cust = self.customers.get(kunnr)
-        if not cust:
-            return [f"Customer {kunnr} does not exist in SAP (KNA1)"]
-        errs = []
-        if _text(cust.get("loevm")):
-            errs.append(f"Customer {kunnr} is flagged for deletion in SAP")
-        if _text(cust.get("sperr")):
-            errs.append(f"Customer {kunnr} is blocked for posting in SAP")
-        if bukrs:
-            cc = self.company_customers.get((bukrs, kunnr))
-            if not cc:
-                errs.append(f"Customer {kunnr} is not created for company code {bukrs} (KNB1)")
-            elif _text(cc.get("sperr")):
-                errs.append(f"Customer {kunnr} is blocked for posting in company code {bukrs}")
-        return errs
+        return self.customers.check(kunnr, bukrs)
 
     def find_invoice(self, kunnr: str, bukrs: str, ref: str, match_by: str) -> List[Dict[str, Any]]:
         fields = ("xblnr", "zuonr") if match_by == "ANY" else (match_by.lower(),)
@@ -308,6 +293,7 @@ def process_invoice_file(
         "match_by": match_by,
         "source": source,
         "sap_posting": "not applicable (invoice validation)",
+        "sap_tables": {"used": SAPInvoiceIndex.TABLES, "ignored": configured_sap_tables()[1]},
         "total": len(results),
         "summary": counts,
         "db_update": db_update,

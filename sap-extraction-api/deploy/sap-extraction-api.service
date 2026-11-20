@@ -1,0 +1,23 @@
+# systemd unit for the SAP Extraction API
+#   sudo cp deploy/sap-extraction-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sap-extraction-api
+#   journalctl -u sap-extraction-api -f
+[Unit]
+Description=SAP Extraction API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sapapp
+Group=sapapp
+WorkingDirectory=/opt/sap-extraction-api
+# Optional KEY=VALUE file for secrets / overrides (DB_PASSWORD, SAP_PASSWORD, API_KEY, ...)
+EnvironmentFile=-/opt/sap-extraction-api/.env
+# One worker: extractions are long-running and must not overlap (a file lock also enforces this)
+ExecStart=/opt/sap-extraction-api/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8002 --workers 1 --proxy-headers
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

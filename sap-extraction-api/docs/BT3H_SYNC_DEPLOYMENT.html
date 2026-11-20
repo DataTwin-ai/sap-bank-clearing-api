@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BT3H Sync Deployment Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Same design system as the other docs in this folder (GO_LIVE_PLAN.html etc.) */
+:root {
+  --bg: #f5f8f8;
+  --surface: #ffffff;
+  --surface-2: #ecf2f2;
+  --fg: #13201f;
+  --muted: #56686b;
+  --line: #d3dede;
+  --accent: #0a6b6b;
+  --accent-soft: #dcefed;
+  --ok: #11785a;   --ok-soft: #dcf2e9;
+  --warn: #9a5a00; --warn-soft: #fbefd8;
+  --err: #b0253a;  --err-soft: #fbe4e7;
+  --info: #1f5aa6; --info-soft: #e1ebf8;
+  --gone: #61696e; --gone-soft: #eceeef;
+  --code-bg: #eef3f3;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-head: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c1313; --surface: #121c1c; --surface-2: #192525; --fg: #e2ebea; --muted: #94a6a7; --line: #2a3838;
+    --accent: #52c4ba; --accent-soft: #123230;
+    --ok: #4fd39c; --ok-soft: #10302a; --warn: #f0b04c; --warn-soft: #33260f;
+    --err: #f27a89; --err-soft: #3a171e; --info: #7eb0f2; --info-soft: #13253c;
+    --gone: #a3abaf; --gone-soft: #232a2c; --code-bg: #0f1818;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c1313; --surface: #121c1c; --surface-2: #192525; --fg: #e2ebea; --muted: #94a6a7; --line: #2a3838;
+  --accent: #52c4ba; --accent-soft: #123230;
+  --ok: #4fd39c; --ok-soft: #10302a; --warn: #f0b04c; --warn-soft: #33260f;
+  --err: #f27a89; --err-soft: #3a171e; --info: #7eb0f2; --info-soft: #13253c;
+  --gone: #a3abaf; --gone-soft: #232a2c; --code-bg: #0f1818;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+.wrap {
+  max-width: 1040px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font-family: var(--font-mono); font-size: .9em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+h1, h2, h3 { font-family: var(--font-head); line-height: 1.2; margin: 0; text-wrap: balance; }
+p { margin: 0; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+
+header.top { background: var(--surface); border-bottom: 1px solid var(--line); }
+header.top .wrap { padding-block: 34px 26px; display: grid; gap: 14px; }
+.eyebrow { font: 600 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: clamp(28px, 4.6vw, 42px); font-weight: 700; }
+.lede { max-width: 72ch; color: var(--muted); font-size: 16px; }
+.asof { font: 500 12.5px/1 var(--font-mono); color: var(--muted); }
+
+.ready { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ready div { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; background: var(--bg); display: grid; gap: 4px; min-width: 0; }
+.ready b { font: 600 24px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ready span { font-size: 13px; color: var(--muted); }
+.ready .ok b { color: var(--ok); }
+.ready .warn b { color: var(--warn); }
+.ready .info b { color: var(--info); }
+.ready .acc b { color: var(--accent); }
+@media (max-width: 720px) { .ready { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+nav.toc { font-size: 13.5px; display: flex; flex-wrap: wrap; gap: 6px 14px; }
+nav.toc a { text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+
+main.wrap { display: grid; gap: 50px; padding-block: 34px 60px; }
+section { display: grid; gap: 14px; min-width: 0; scroll-margin-top: 16px; }
+section > h2 { font-size: 24px; font-weight: 600; }
+section > p, .prose { max-width: 72ch; }
+h3 { font-size: 16.5px; font-weight: 600; }
+
+.chip { display: inline-block; font: 600 11.5px/1 var(--font-mono); letter-spacing: .03em; padding: 4px 7px; border-radius: 4px; white-space: nowrap; }
+.chip.ok { color: var(--ok); background: var(--ok-soft); }
+.chip.warn { color: var(--warn); background: var(--warn-soft); }
+.chip.err { color: var(--err); background: var(--err-soft); }
+.chip.info { color: var(--info); background: var(--info-soft); }
+.chip.gone { color: var(--gone); background: var(--gone-soft); }
+.chip.acc { color: var(--accent); background: var(--accent-soft); }
+
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+th { font: 600 11.5px/1.3 var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.new td { background: var(--accent-soft); }
+
+pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font: 400 13px/1.55 var(--font-mono); color: var(--fg); }
+pre .c { color: var(--muted); }
+pre .hl { color: var(--accent); font-weight: 600; }
+.codehead { font: 600 11.5px/1 var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 14px; border-radius: 0 6px 6px 0; max-width: 72ch; }
+.note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 760px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; background: var(--surface); display: grid; gap: 8px; align-content: start; min-width: 0; }
+
+/* Flow diagram */
+.diagram { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 14px 10px; overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 620px; height: auto; }
+.dg-box { fill: var(--surface); stroke: var(--muted); stroke-width: 1.25; }
+.dg-main { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.dg-line { fill: none; stroke: var(--muted); stroke-width: 1.25; }
+.dg-dash { stroke-dasharray: 4 4; }
+.dg-head { fill: var(--muted); }
+.dg-name { fill: var(--fg); font: 600 13px var(--font-body); }
+.dg-body { fill: var(--muted); font: 400 11.5px var(--font-body); }
+.dg-label { fill: var(--muted); font: 400 11.5px var(--font-body); }
+.caption { font-size: 13.5px; color: var(--muted); max-width: 72ch; }
+
+/* Deployment steps */
+ol.steps { list-style: none; margin: 0; padding: 0; display: grid; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); counter-reset: s; overflow: hidden; }
+ol.steps > li { counter-increment: s; display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 12px; padding: 14px 16px 14px 13px; border-bottom: 1px solid var(--line); border-left: 4px solid var(--warn); }
+ol.steps > li:last-child { border-bottom: 0; }
+ol.steps > li.cond { border-left-color: var(--info); }
+ol.steps > li::before { content: counter(s); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font: 600 13px/1 var(--font-mono); }
+ol.steps .body { display: grid; gap: 8px; min-width: 0; }
+ol.steps .body > p { font-size: 14px; color: var(--muted); max-width: 70ch; }
+ol.steps b { font-weight: 600; }
+
+ul.checks { list-style: none; padding: 0; display: grid; gap: 8px; }
+ul.checks li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+ul.checks li::before { content: ""; width: 14px; height: 14px; border: 1.5px solid var(--muted); border-radius: 3px; transform: translateY(2px); }
+
+footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+footer .wrap { padding-block: 18px 26px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">SAP → DataTwin · deployment guide</div>
+    <h1>SAP Invoice Sync to active_bt3h</h1>
+    <p class="lede">SAP open AR invoices now land in <code>active_bt3h</code>, not <code>active_bt3i</code>. The delta worker keeps <code>active_bsid</code> current every minute; a new cron job copies it into <code>active_bt3h</code> every 5 minutes, so the AR Inbox sees a new SAP invoice within about 6 minutes.</p>
+    <p class="asof">As of 2026-11-20 · project sap-extraction-api · server path /opt/sap-extraction-api</p>
+    <div class="ready" aria-label="Summary">
+      <div class="ok"><b>119</b><span>Invoice rows in active_bt3h (dev)</span></div>
+      <div class="acc"><b>*/5</b><span>new cron job, every 5 min</span></div>
+      <div class="info"><b>2</b><span>files to deploy</span></div>
+      <div class="warn"><b>4</b><span>open decisions</span></div>
+    </div>
+    <nav class="toc" aria-label="Contents">
+      <a href="#overview">Overview</a>
+      <a href="#components">Components</a>
+      <a href="#cron">Cron schedule</a>
+      <a href="#rules">Data rules</a>
+      <a href="#onetime">One-time changes</a>
+      <a href="#deploy">Deployment steps</a>
+      <a href="#verify">Verification</a>
+      <a href="#rollback">Rollback</a>
+      <a href="#limits">Limitations</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section id="overview">
+    <h2>Overview</h2>
+    <div class="diagram">
+      <svg viewBox="0 0 760 322" role="img" aria-label="SAP invoices reach active_bt3h within about 6 minutes">
+        <defs>
+          <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 0L10 5L0 10z" class="dg-head"/>
+          </marker>
+        </defs>
+        <text x="24" y="34" class="dg-name" style="font-size:15px">SAP invoices reach active_bt3h within about 6 minutes</text>
+        <!-- connectors -->
+        <path class="dg-line" d="M148 150H171" marker-end="url(#arr)"/>
+        <path class="dg-line" d="M295 150H318" marker-end="url(#arr)"/>
+        <path class="dg-line" d="M442 150H465" marker-end="url(#arr)"/>
+        <path class="dg-line" d="M589 150H612" marker-end="url(#arr)"/>
+        <path class="dg-line" d="M380 242V178" marker-end="url(#arr)"/>
+        <path class="dg-line" d="M233 242V210H330V178" marker-end="url(#arr)"/>
+        <path class="dg-line dg-dash" d="M527 242V178" marker-end="url(#arr)"/>
+        <!-- edge labels -->
+        <text x="159.5" y="100" text-anchor="middle" class="dg-label">delta worker</text>
+        <text x="159.5" y="115" text-anchor="middle" class="dg-label">every 60 s</text>
+        <text x="600.5" y="115" text-anchor="middle" class="dg-label">reads</text>
+        <text x="537" y="206" class="dg-label">one-time copy</text>
+        <text x="537" y="221" class="dg-label">2026-11-20</text>
+        <!-- row A -->
+        <rect x="24" y="122" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="86" y="146" text-anchor="middle" class="dg-name">SAP S/4HANA</text>
+        <text x="86" y="162" text-anchor="middle" class="dg-body">BSID, via OData</text>
+        <rect x="171" y="122" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="233" y="146" text-anchor="middle" class="dg-name">active_bsid</text>
+        <text x="233" y="162" text-anchor="middle" class="dg-body">SAP open items</text>
+        <rect x="318" y="122" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="380" y="146" text-anchor="middle" class="dg-name">bt3h sync</text>
+        <text x="380" y="162" text-anchor="middle" class="dg-body">upsert + CTX IDs</text>
+        <rect x="465" y="122" width="124" height="56" rx="8" class="dg-main"/>
+        <text x="527" y="146" text-anchor="middle" class="dg-name">active_bt3h</text>
+        <text x="527" y="162" text-anchor="middle" class="dg-body" style="fill:var(--fg)">Invoice rows</text>
+        <rect x="612" y="122" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="674" y="146" text-anchor="middle" class="dg-name">AR Inbox</text>
+        <text x="674" y="162" text-anchor="middle" class="dg-body">invoice query</text>
+        <!-- row B -->
+        <rect x="171" y="242" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="233" y="266" text-anchor="middle" class="dg-name">Sync API</text>
+        <text x="233" y="282" text-anchor="middle" class="dg-body">on demand</text>
+        <rect x="318" y="242" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="380" y="266" text-anchor="middle" class="dg-name">Cron job</text>
+        <text x="380" y="282" text-anchor="middle" class="dg-body">every 5 min</text>
+        <rect x="465" y="242" width="124" height="56" rx="8" class="dg-box"/>
+        <text x="527" y="266" text-anchor="middle" class="dg-name">active_bt3i</text>
+        <text x="527" y="282" text-anchor="middle" class="dg-body">114 Invoice rows</text>
+      </svg>
+    </div>
+    <p class="caption">The delta worker keeps <code>active_bsid</code> current; the cron job (or a call to the sync API) runs the sync into <code>active_bt3h</code>, which the AR Inbox query reads. <code>active_bt3i</code> fed <code>active_bt3h</code> once, on 2026-11-20.</p>
+    <ul class="prose">
+      <li><b>Source:</b> <code>active_bsid</code> (SAP BSID, open customer items), kept up to date by the delta worker.</li>
+      <li><b>Target:</b> <code>active_bt3h</code>, rows with <code>processcode = 'BT3H'</code>, <code>themename = 'IT_Invoice'</code>, <code>transactiontype = 'Invoice'</code>.</li>
+      <li><b>Why the move:</b> the AR Inbox invoice query is to read from <code>active_bt3h</code>. All 114 existing Invoice rows of <code>active_bt3i</code> were copied there on 2026-11-20; <code>active_bt3i</code> itself is unchanged.</li>
+      <li><b>Project:</b> <code>sap-extraction-api</code> (FastAPI + CLI), deployed at <code>/opt/sap-extraction-api</code> on the EC2 host. It is not under git; the pre-change script is kept as <code>sync_bsid_to_bt3i.py.bak_20261120</code>.</li>
+    </ul>
+  </section>
+
+  <section id="components">
+    <h2>Components</h2>
+    <p>Three things run on the server: the API (systemd), the delta worker (systemd) and the cron jobs. The bt3h sync itself is a library file that the API and the cron job call.</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Role</th><th>File</th><th>How it runs on the server</th><th>Writes to</th></tr></thead>
+        <tbody>
+          <tr><td><b>API</b></td><td><code>main.py</code></td><td>systemd <code>sap-extraction-api.service</code> → <code>uvicorn main:app --host 127.0.0.1 --port 8002 --workers 1</code></td><td>depends on endpoint; <code>POST /api/transform/bt3i</code> → <code>active_bt3h</code></td></tr>
+          <tr><td><b>Delta worker</b></td><td><code>worker.py</code> (started as <code>cli.py worker</code>)</td><td>systemd <code>sap-extraction-worker.service</code>, always on, <code>Restart=always</code></td><td><code>active_bsid</code> every 60 s (<code>[delta] poll_seconds</code>)</td></tr>
+          <tr><td><b>Cron wrapper</b></td><td><code>deploy/run_cron.sh</code> → <code>cli.py &lt;command&gt;</code></td><td><code>crontab -e</code> as the service user <code>sapapp</code></td><td>whatever the command does</td></tr>
+          <tr class="new"><td><b>bt3h sync logic</b></td><td><code>sync_bsid_to_bt3i.py</code> (function <code>sync_bsid_to_bt3h</code>)</td><td>never on its own; called by the cron job and the API</td><td><code>active_bt3h</code></td></tr>
+          <tr><td><b>Pipeline glue</b></td><td><code>pipeline.py</code> (<code>run_bt3i_sync</code>, <code>transform_bt3i</code>)</td><td>imported by <code>cli.py</code> and <code>main.py</code></td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">The CLI command (<code>sync-bt3i</code>) and the API path (<code>/api/transform/bt3i</code>) still carry the old name; both write to <code>active_bt3h</code>. The old function name <code>sync_bsid_to_bt3i</code> is kept as an alias so existing callers work.</p>
+  </section>
+
+  <section id="cron">
+    <h2>Cron schedule</h2>
+    <p>Add one new job: <code>sync-bt3i</code> every 5 minutes. Without it nothing writes to <code>active_bt3h</code> automatically, because the daily <code>sync</code> skips BSID (it is delta-managed) and <code>run_bt3i_sync = false</code> in config.ini. Times below assume the EC2 clock is UTC (IST = UTC + 5:30).</p>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Job</th><th>Cron expression</th><th>Runs at (UTC)</th><th>Runs at (IST)</th><th>What it does</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr class="new"><td><b>bt3h sync</b></td><td><code>*/5 * * * *</code></td><td>every 5 min: :00, :05 … :55</td><td>every 5 min (:30, :35 … :25 past the IST hour)</td><td><code>active_bsid</code> → <code>active_bt3h</code> upsert, CTXSAP context IDs for new invoices</td><td><span class="chip acc">New — add</span></td></tr>
+          <tr><td><b>Daily full load</b></td><td><code>30 0 * * *</code></td><td>00:30 daily</td><td>06:00 daily</td><td>Full load of non-delta <code>[sap]</code> tables; BSID is skipped</td><td><span class="chip ok">Existing</span></td></tr>
+          <tr><td><b>Delta cycle (fallback)</b></td><td><code>* * * * *</code></td><td>every minute</td><td>every minute</td><td><code>delta-poll</code> + <code>ingest</code>; only when the systemd worker is not used</td><td><span class="chip gone">Commented out</span></td></tr>
+          <tr><td><b>Delta worker</b></td><td>— (systemd, not cron)</td><td>every 60 s</td><td>every 60 s</td><td>SAP BSID → <code>active_bsid</code> (new / changed / removed rows)</td><td><span class="chip ok">Existing</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="codehead">Crontab for the service user · sudo -u sapapp crontab -e</p>
+<pre><span class="c"># SAP extraction cron jobs (server clock: UTC). 00:30 UTC = 06:00 IST.
+# Exit codes: 0 ok, 1 failed, 2 partial, 75 skipped (previous run still holds the lock).
+# Detailed log: /opt/sap-extraction-api/log/cron.log ; JSON result of each run: log/cron.out
+
+# NEW: active_bsid -&gt; active_bt3h (SAP open AR invoices) every 5 minutes</span>
+<span class="hl">*/5 * * * * /opt/sap-extraction-api/deploy/run_cron.sh sync-bt3i &gt;&gt; /opt/sap-extraction-api/log/cron.out 2&gt;&amp;1</span>
+
+<span class="c"># Existing: full loads of the other [sap] tables once a day at 06:00 IST</span>
+30 0 * * * /opt/sap-extraction-api/deploy/run_cron.sh sync &gt;&gt; /opt/sap-extraction-api/log/cron.out 2&gt;&amp;1</pre>
+    <h3>Overlap and locking</h3>
+    <ul class="prose">
+      <li><code>sync-bt3i</code>, the daily <code>sync</code> and the API extract endpoints share one file lock (<code>pipeline</code>). If one is running, the next <code>sync-bt3i</code> exits with code <b>75</b> and does nothing; the run 5 minutes later picks it up.</li>
+      <li>The delta worker uses its own lock (<code>delta_&lt;table&gt;</code>), so it never blocks the bt3h sync.</li>
+      <li>A run takes about 3–6 seconds for ~60 invoices (measured on dev, 2026-11-20), so 5 minutes leaves wide headroom.</li>
+      <li>Every run is an upsert: running more often (<code>*/1</code>) or less often (<code>0 * * * *</code>, hourly) never creates duplicates or changes existing context IDs; it only changes how fast new SAP invoices appear.</li>
+    </ul>
+  </section>
+
+  <section id="rules">
+    <h2>Data rules</h2>
+    <p>Each open SAP customer invoice line in <code>active_bsid</code> becomes one <code>active_bt3h</code> row; the primary key is <code>(processcode, themename, transactiontype, orgid, documentnumber, sno)</code>.</p>
+    <div class="two">
+      <div class="card">
+        <h3>Which rows are picked from active_bsid</h3>
+        <ul>
+          <li>Debit lines (<code>shkzg = 'S'</code>) or document types <code>DR</code>, <code>RV</code>, <code>DG</code>, <code>AB</code>.</li>
+          <li>Amount in company-code currency (<code>dmbtr</code>) greater than 0.</li>
+          <li>Rows the delta poller marked <code>sap_status = 'REMOVED'</code> (cleared in SAP) are skipped.</li>
+          <li>Optional filters: company code (<code>--company-code</code>), org and tenant (<code>--org-id</code>, <code>--tenant-id</code>; defaults from <code>[defaults]</code> in config.ini: <code>OM0000000001</code> / <code>DM00005</code>).</li>
+          <li>Exact duplicates (every selected column identical) are dropped.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Upsert behaviour on re-runs</h3>
+        <ul>
+          <li>New invoice → inserted; a new CTXSAP context ID is reserved from the <code>MASTEROBJECTSEQUENCINGV2</code> sequence.</li>
+          <li>Existing invoice → amounts, dates, customer, currency and <code>documentid</code> are refreshed from SAP.</li>
+          <li>Never overwritten once set: <code>grouptransactionref</code> (context ID), <code>tdsvalue</code>, <code>adjustedamount</code>. Context IDs already present in <code>active_bt3h</code> or in the old <code>active_bt3i</code> rows are reused.</li>
+          <li><code>linkref</code> is only replaced when SAP sends a value.</li>
+          <li>Rows are never deleted: an invoice cleared in SAP stays in <code>active_bt3h</code> with its last values.</li>
+        </ul>
+      </div>
+    </div>
+    <h3>Column mapping</h3>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>active_bt3h column</th><th>Value</th><th>SAP source (active_bsid)</th></tr></thead>
+        <tbody>
+          <tr><td><code>processcode</code> / <code>themename</code> / <code>transactiontype</code></td><td><code>BT3H</code> / <code>IT_Invoice</code> / <code>Invoice</code></td><td>fixed</td></tr>
+          <tr><td><code>orgid</code>, <code>tenant_id</code></td><td>org / tenant of the run</td><td>config or CLI</td></tr>
+          <tr><td><code>documentnumber</code></td><td>invoice reference; falls back to the SAP document number</td><td><code>xblnr</code>, else <code>belnr</code></td></tr>
+          <tr><td><code>sno</code></td><td>1, 2, … per <code>documentnumber</code></td><td>line counter</td></tr>
+          <tr><td><code>documentid</code></td><td>SAP accounting document number</td><td><code>belnr</code></td></tr>
+          <tr><td><code>grouptransactionref</code></td><td>context ID <code>CTXSAP&lt;org2&gt;&lt;FY&gt;&lt;seq7&gt;</code>, one per SAP document</td><td>generated</td></tr>
+          <tr><td><code>documentdate</code> / <code>postingdate</code></td><td>dates</td><td><code>bldat</code> / <code>budat</code></td></tr>
+          <tr><td><code>sendername</code> / <code>senderaccount</code></td><td>customer name / number</td><td><code>kna1.name1</code> / <code>kunnr</code></td></tr>
+          <tr><td><code>basevalue</code>, <code>documentvalue</code>, <code>totalbasevalue</code>, <code>totaldocumentvalue</code></td><td>invoice amount</td><td><code>dmbtr</code></td></tr>
+          <tr><td><code>currency</code>, <code>transactioncurrency</code>, <code>localcurrency</code></td><td>currency</td><td><code>waers</code></td></tr>
+          <tr><td><code>tdsvalue</code>, <code>adjustedamount</code>, <code>taxpercentage</code></td><td>0</td><td>—</td></tr>
+          <tr><td><code>linkref</code></td><td>partner reference (UTR)</td><td><code>xref1</code></td></tr>
+          <tr><td><code>documenttype</code> / <code>source_table</code></td><td><code>Invoice</code> / <code>active_bsid</code></td><td>fixed</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="onetime">
+    <h2>One-time changes already applied (dev DB dm00005)</h2>
+    <p>On 2026-11-20 the dev database (<code>dm00005</code>, port 5433) got 5 new <code>active_bt3h</code> columns and a full copy of the <code>active_bt3i</code> Invoice rows. Any other database the server uses needs step 2 of the deployment before the first sync.</p>
+    <p class="codehead">1 · Schema — added to active_bt3h (the AR Inbox query reads them; types match active_bt3i)</p>
+<pre>ALTER TABLE public.active_bt3h
+  ADD COLUMN IF NOT EXISTS grouptransactionref text,
+  ADD COLUMN IF NOT EXISTS basevalue double precision,
+  ADD COLUMN IF NOT EXISTS documentvalue double precision,
+  ADD COLUMN IF NOT EXISTS tdsvalue double precision,
+  ADD COLUMN IF NOT EXISTS adjustedamount double precision;</pre>
+    <ul class="prose">
+      <li><b>2 · Copy</b> — every <code>active_bt3i</code> row with <code>transactiontype = 'Invoice'</code> was upserted into <code>active_bt3h</code>: all 87 columns both tables share, <code>processcode</code> set to <code>BT3H</code>, <code>sgstpercentage</code> cast to text. <code>active_bt3i</code> was not changed.</li>
+      <li><b>3 · Sync run</b> — the updated script ran once more to fill the SAP invoices that were never in <code>active_bt3i</code>.</li>
+    </ul>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Result</th><th>Count</th></tr></thead>
+        <tbody>
+          <tr><td><code>active_bt3i</code> Invoice rows copied</td><td class="num">114 (60 uploaded, 54 from SAP)</td></tr>
+          <tr><td>… inserted as new rows</td><td class="num">61</td></tr>
+          <tr><td>… overwrote rows from the first sync run (same invoices)</td><td class="num">53</td></tr>
+          <tr><td><code>active_bt3h</code> Invoice rows after copy + sync</td><td class="num">119</td></tr>
+          <tr><td>New CTXSAP context IDs reserved (<code>CTXSAP0126270000176</code> – <code>…179</code>)</td><td class="num">4</td></tr>
+          <tr><td>Rows without a context ID</td><td class="num">0</td></tr>
+          <tr><td><code>active_bt3i</code> Invoice rows missing from <code>active_bt3h</code></td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="deploy">
+    <h2>Deployment steps (EC2, /opt/sap-extraction-api)</h2>
+    <p>Two files change on the server (<code>sync_bsid_to_bt3i.py</code>, <code>pipeline.py</code>), plus one crontab line; the API and worker only need a restart. Run as a user with sudo; files are owned by <code>sapapp</code>.</p>
+    <ol class="steps">
+      <li><div class="body"><b>Back up the current files on the server</b>
+<pre>cd /opt/sap-extraction-api
+sudo cp sync_bsid_to_bt3i.py sync_bsid_to_bt3i.py.bak_$(date +%Y%m%d)
+sudo cp pipeline.py pipeline.py.bak_$(date +%Y%m%d)</pre></div></li>
+      <li class="cond"><div class="body"><b>Add the 5 columns in the server's database</b> <span class="chip info">skip on dev dm00005</span>
+        <p>Run the <code>ALTER TABLE</code> from <a href="#onetime">One-time changes</a> with <code>psql</code> or any SQL client. Without it every sync fails with "column grouptransactionref does not exist".</p></div></li>
+      <li><div class="body"><b>Copy the changed files</b> from <code>C:\sap-extraction-api</code> (README.md is optional)
+<pre><span class="c"># from the workstation</span>
+scp sync_bsid_to_bt3i.py pipeline.py README.md &lt;user&gt;@&lt;ec2-host&gt;:/tmp/
+<span class="c"># on the server</span>
+sudo install -o sapapp -g sapapp -m 644 /tmp/sync_bsid_to_bt3i.py /tmp/pipeline.py /tmp/README.md /opt/sap-extraction-api/
+sudo -u sapapp /opt/sap-extraction-api/.venv/bin/python -m py_compile /opt/sap-extraction-api/sync_bsid_to_bt3i.py /opt/sap-extraction-api/pipeline.py</pre></div></li>
+      <li><div class="body"><b>Check config.ini on the server</b>
+        <p><code>[defaults] org_id</code> and <code>tenant_id</code> are the org/tenant the rows are written for. <code>[sap] run_bt3i_sync</code> can stay <code>false</code>; the cron job calls the sync directly.</p></div></li>
+      <li><div class="body"><b>Restart the services</b> so the API and worker load the new code
+<pre>sudo systemctl restart sap-extraction-api sap-extraction-worker
+systemctl status sap-extraction-api sap-extraction-worker --no-pager</pre></div></li>
+      <li><div class="body"><b>Run the sync once by hand</b> and expect exit code 0 with <code>target_table : active_bt3h</code>
+<pre>sudo -u sapapp /opt/sap-extraction-api/deploy/run_cron.sh sync-bt3i; echo "exit=$?"</pre></div></li>
+      <li><div class="body"><b>Install the cron job</b>
+        <p><code>sudo -u sapapp crontab -e</code> and add the <code>*/5</code> line from <a href="#cron">Cron schedule</a>.</p></div></li>
+      <li><div class="body"><b>Watch the first scheduled run</b>
+        <p>After the next 5-minute mark: <code>tail -f /opt/sap-extraction-api/log/cron.out</code> (one JSON result per run) and <code>log/cron.log</code> (details).</p></div></li>
+    </ol>
+  </section>
+
+  <section id="verify">
+    <h2>Verification</h2>
+    <p>The deployment is good when a manual run exits 0, the cron log shows a result every 5 minutes, and the AR Inbox query returns rows from <code>active_bt3h</code> with no empty Context_ID.</p>
+    <p class="codehead">Trigger a sync on demand</p>
+<pre><span class="c"># CLI (same as the cron job)</span>
+sudo -u sapapp /opt/sap-extraction-api/deploy/run_cron.sh sync-bt3i
+
+<span class="c"># API (port 8002, local only; X-API-Key = [api] api_key in config.ini)</span>
+curl -s -X POST http://127.0.0.1:8002/api/transform/bt3i \
+  -H "X-API-Key: &lt;api key&gt;" -H "Content-Type: application/json" -d '{}'</pre>
+    <p>The result lists <code>invoices_found_in_bsid</code>, <code>invoices_upserted_to_bt3h</code> and <code>total_bsid_invoices_in_bt3h</code>; the log line <code>Context IDs: N reused, M newly generated</code> shows the context-ID step.</p>
+    <p class="codehead">SQL checks</p>
+<pre><span class="c">-- 1. SAP invoices synced into bt3h, newest first</span>
+SELECT documentnumber, documentid, grouptransactionref, documentdate, sendername,
+       documentvalue, currency, modifieddatetime
+FROM active_bt3h
+WHERE processcode = 'BT3H' AND transactiontype = 'Invoice' AND source_table = 'active_bsid'
+ORDER BY modifieddatetime DESC;
+
+<span class="c">-- 2. Last sync time (should be under 5 minutes old)</span>
+SELECT max(modifieddatetime) FROM active_bt3h
+WHERE processcode = 'BT3H' AND source_table = 'active_bsid';
+
+<span class="c">-- 3. Invoice rows without context or amount (expected: 0)</span>
+SELECT count(*) FROM active_bt3h
+WHERE transactiontype = 'Invoice'
+  AND (grouptransactionref IS NULL OR basevalue IS NULL OR documentvalue IS NULL);
+
+<span class="c">-- 4. Open SAP invoices not yet in bt3h (expected: 0 right after a sync)</span>
+SELECT b.belnr, b.xblnr FROM active_bsid b
+WHERE COALESCE(b.shkzg, '') = 'S' AND COALESCE(b.sap_status, '') &lt;&gt; 'REMOVED'
+  AND NOT EXISTS (SELECT 1 FROM active_bt3h h
+                  WHERE h.processcode = 'BT3H' AND h.documentid = b.belnr);</pre>
+    <p class="note"><b>AR Inbox query</b> — the existing query works on <code>active_bt3h</code> with one change, <code>FROM active_bt3i a</code> → <code>FROM active_bt3h a</code>. On dev it returned 119 rows, all with a Context_ID (<code>active_bt3i</code> returns 114).</p>
+  </section>
+
+  <section id="rollback">
+    <h2>Rollback and troubleshooting</h2>
+    <p>To go back to writing <code>active_bt3i</code>, restore the backed-up script and remove the cron line; the rows already in <code>active_bt3h</code> stay unless deleted on purpose.</p>
+    <p class="codehead">Rollback</p>
+<pre>cd /opt/sap-extraction-api
+sudo -u sapapp crontab -e        <span class="c"># delete the */5 sync-bt3i line</span>
+sudo cp sync_bsid_to_bt3i.py.bak_&lt;YYYYMMDD&gt; sync_bsid_to_bt3i.py
+sudo cp pipeline.py.bak_&lt;YYYYMMDD&gt; pipeline.py
+sudo systemctl restart sap-extraction-api sap-extraction-worker</pre>
+    <p>The 5 added columns can stay; nothing else reads or requires them. Removing the synced rows is a separate, deliberate step (filter <code>processcode = 'BT3H' AND themename = 'IT_Invoice' AND transactiontype = 'Invoice'</code>); check with the AR Inbox owner first.</p>
+    <h3>Troubleshooting</h3>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr></thead>
+        <tbody>
+          <tr><td><code>column "grouptransactionref" of relation "active_bt3h" does not exist</code></td><td>Step 2 (ALTER TABLE) not run on this database</td><td>Run the ALTER TABLE, then the sync again</td></tr>
+          <tr><td>Exit code 75, "Another SAP extraction / sync is already running"</td><td>Daily <code>sync</code> or an API extract holds the <code>pipeline</code> lock</td><td>Nothing; the next 5-minute run catches up. If it repeats for hours, look for a stuck process holding the lock</td></tr>
+          <tr><td><code>records_processed: 0</code>, "No invoice records found in active_bsid"</td><td>Delta worker stopped, or SAP has no open invoices</td><td><code>systemctl status sap-extraction-worker</code>, <code>cli.py delta-status</code></td></tr>
+          <tr><td>New SAP invoice not in the AR Inbox after 10 minutes</td><td>Cron job missing or failing</td><td><code>sudo -u sapapp crontab -l</code>, then <code>tail log/cron.out</code> and <code>log/cron.log</code></td></tr>
+          <tr><td>Context ID missing on a new row</td><td>Sequence reservation failed</td><td>Error is in <code>log/cron.log</code> under <code>SAP_Pipeline.Context</code>; re-run the sync</td></tr>
+          <tr><td>Invoice still shown after it was paid in SAP</td><td>By design: the sync never deletes rows</td><td>See <a href="#limits">Known limitations</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="limits">
+    <h2>Known limitations and open decisions</h2>
+    <ul class="prose">
+      <li><b>Cleared invoices are not removed.</b> An invoice paid in SAP drops out of <code>active_bsid</code> but its <code>active_bt3h</code> row stays. On dev, 59 SAP rows sit in <code>active_bt3h</code> against 58 open in <code>active_bsid</code>.</li>
+      <li><b>Uploaded invoices still go to active_bt3i.</b> The 2026-11-20 copy was one-time; invoices created later outside SAP (UI upload, other jobs) are written to <code>active_bt3i</code> only.</li>
+      <li><b>active_bt3i keeps its 114 Invoice rows.</b> They are no longer refreshed by the sync.</li>
+      <li><b>The bank-clearing API (sap-bank-clearing-api) updates documentid in active_bt3i only.</b> SAP-sourced rows in <code>active_bt3h</code> already carry <code>documentid</code>, so they need nothing; uploaded invoices would.</li>
+      <li><b>Old names remain.</b> CLI <code>sync-bt3i</code>, API <code>/api/transform/bt3i</code>, config <code>run_bt3i_sync</code> and the file name all still say bt3i.</li>
+      <li><b>No version control.</b> <code>C:\sap-extraction-api</code> is not a git repository; the backups above are the only history.</li>
+      <li><b>The one-time copy is not part of the project.</b> Another database needs the 114-row copy as well as the ALTER TABLE; the copy script exists only on the workstation that ran it.</li>
+    </ul>
+    <h3>Open decisions</h3>
+    <ul class="checks">
+      <li>Delete cleared invoices from <code>active_bt3h</code> on each sync, or keep them?</li>
+      <li>Point the AR Inbox query (and any other reader) at <code>active_bt3h</code>.</li>
+      <li>Route new uploaded invoices to <code>active_bt3h</code> as well?</li>
+      <li>Rename <code>sync-bt3i</code> / <code>/api/transform/bt3i</code> to bt3h names?</li>
+    </ul>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>SAP Invoice Sync to active_bt3h · deployment &amp; cron guide</span>
+    <span>As of 2026-11-20</span>
+    <span>Markdown version: BT3H_SYNC_DEPLOYMENT.md</span>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,1319 @@
+<title>SAP BSID Delta Ingestion</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  /* Layout: header band + 6-node flow strip, then sticky contents rail beside one reading column */
+  :root {
+    --bg: #f5f8f8;
+    --surface: #ffffff;
+    --surface-2: #ecf2f2;
+    --fg: #13201f;
+    --muted: #56686b;
+    --line: #d3dede;
+    --accent: #0a6b6b;
+    --accent-soft: #dcefed;
+    --ok: #11785a;
+    --ok-soft: #dcf2e9;
+    --warn: #9a5a00;
+    --warn-soft: #fbefd8;
+    --err: #b0253a;
+    --err-soft: #fbe4e7;
+    --info: #1f5aa6;
+    --info-soft: #e1ebf8;
+    --gone: #61696e;
+    --gone-soft: #eceeef;
+    --code-bg: #eef3f3;
+    --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --font-head: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c1313;
+      --surface: #121c1c;
+      --surface-2: #192525;
+      --fg: #e2ebea;
+      --muted: #94a6a7;
+      --line: #2a3838;
+      --accent: #52c4ba;
+      --accent-soft: #123230;
+      --ok: #4fd39c;
+      --ok-soft: #10302a;
+      --warn: #f0b04c;
+      --warn-soft: #33260f;
+      --err: #f27a89;
+      --err-soft: #3a171e;
+      --info: #7eb0f2;
+      --info-soft: #13253c;
+      --gone: #a3abaf;
+      --gone-soft: #232a2c;
+      --code-bg: #0f1818;
+      color-scheme: dark;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0c1313;
+    --surface: #121c1c;
+    --surface-2: #192525;
+    --fg: #e2ebea;
+    --muted: #94a6a7;
+    --line: #2a3838;
+    --accent: #52c4ba;
+    --accent-soft: #123230;
+    --ok: #4fd39c;
+    --ok-soft: #10302a;
+    --warn: #f0b04c;
+    --warn-soft: #33260f;
+    --err: #f27a89;
+    --err-soft: #3a171e;
+    --info: #7eb0f2;
+    --info-soft: #13253c;
+    --gone: #a3abaf;
+    --gone-soft: #232a2c;
+    --code-bg: #0f1818;
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .wrap {
+    max-width: 1160px;
+    margin: 0 auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+
+  a {
+    color: var(--accent);
+  }
+
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  code,
+  .mono {
+    font-family: var(--font-mono);
+    font-size: .9em;
+  }
+
+  :not(pre)>code {
+    background: var(--surface-2);
+    padding: 1px 5px;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-head);
+    text-wrap: balance;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  /* Header */
+  header.top {
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  header.top .wrap {
+    padding-block: 36px 28px;
+    display: grid;
+    gap: 14px;
+  }
+
+  .eyebrow {
+    font: 600 12px/1 var(--font-mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-size: clamp(30px, 5vw, 44px);
+    font-weight: 700;
+    letter-spacing: -.01em;
+  }
+
+  .lede {
+    max-width: 70ch;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .meta span {
+    font: 500 12.5px/1 var(--font-mono);
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+  }
+
+  .meta b {
+    font-weight: 500;
+    color: var(--muted);
+    margin-right: 6px;
+  }
+
+  /* Flow strip */
+  .flow-band {
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .flow-band .wrap {
+    padding-block: 22px;
+  }
+
+  ol.flow {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 26px;
+  }
+
+  ol.flow li {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 12px 11px;
+    min-width: 0;
+  }
+
+  ol.flow li.hot {
+    border-color: var(--accent);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  ol.flow li:not(:last-child)::after {
+    content: "\2192";
+    position: absolute;
+    right: -21px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--accent);
+    font: 600 16px/1 var(--font-mono);
+  }
+
+  .flow .node {
+    font: 600 14px/1.25 var(--font-head);
+    overflow-wrap: anywhere;
+  }
+
+  .flow .sub {
+    font: 400 12px/1.35 var(--font-mono);
+    color: var(--muted);
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 900px) {
+    ol.flow {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 22px;
+    }
+
+    ol.flow li:not(:last-child)::after {
+      content: "\2193";
+      right: auto;
+      left: 22px;
+      top: auto;
+      bottom: -19px;
+      transform: none;
+    }
+  }
+
+  /* Body grid */
+  .layout {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: 44px;
+    padding-block: 36px 64px;
+  }
+
+  nav.toc {
+    position: sticky;
+    top: calc(env(safe-area-inset-top, 0px) + 20px);
+    align-self: start;
+  }
+
+  nav.toc p {
+    font: 600 11.5px/1 var(--font-mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+
+  nav.toc ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+    border-left: 1px solid var(--line);
+  }
+
+  nav.toc a {
+    display: block;
+    padding: 4px 0 4px 12px;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13.5px;
+    margin-left: -1px;
+    border-left: 2px solid transparent;
+  }
+
+  nav.toc a:hover {
+    color: var(--fg);
+    border-left-color: var(--accent);
+  }
+
+  @media (max-width: 900px) {
+    .layout {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 24px;
+      padding-block-start: 24px;
+    }
+
+    nav.toc {
+      position: static;
+    }
+
+    nav.toc ol {
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      border-left: 0;
+      gap: 4px 12px;
+    }
+
+    nav.toc a {
+      padding-left: 0;
+      border-left: 0;
+      margin-left: 0;
+    }
+  }
+
+  main {
+    display: grid;
+    gap: 52px;
+    min-width: 0;
+  }
+
+  section {
+    display: grid;
+    gap: 16px;
+    min-width: 0;
+    scroll-margin-top: 20px;
+  }
+
+  section>h2 {
+    font-size: 25px;
+    font-weight: 600;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+
+  section>h2 .tag {
+    font: 500 12px/1 var(--font-mono);
+    color: var(--muted);
+    letter-spacing: .04em;
+  }
+
+  section>p,
+  .prose {
+    max-width: 72ch;
+  }
+
+  h3 {
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  /* Steps (a real sequence) */
+  ol.steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0;
+    counter-reset: step;
+  }
+
+  ol.steps>li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 14px;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+  }
+
+  ol.steps>li:last-child {
+    border-bottom: 1px solid var(--line);
+  }
+
+  ol.steps>li::before {
+    content: counter(step);
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font: 600 14px/1 var(--font-mono);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  ol.steps h3 {
+    margin-bottom: 4px;
+  }
+
+  ol.steps p {
+    max-width: 70ch;
+    color: var(--fg);
+  }
+
+  ol.steps .when {
+    font: 500 12px/1 var(--font-mono);
+    color: var(--muted);
+    margin-left: 8px;
+  }
+
+  /* Chips */
+  .chip {
+    display: inline-block;
+    font: 600 11.5px/1 var(--font-mono);
+    letter-spacing: .03em;
+    padding: 4px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
+  .chip.ok {
+    color: var(--ok);
+    background: var(--ok-soft);
+  }
+
+  .chip.warn {
+    color: var(--warn);
+    background: var(--warn-soft);
+  }
+
+  .chip.err {
+    color: var(--err);
+    background: var(--err-soft);
+  }
+
+  .chip.info {
+    color: var(--info);
+    background: var(--info-soft);
+  }
+
+  .chip.gone {
+    color: var(--gone);
+    background: var(--gone-soft);
+  }
+
+  .chip.acc {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  /* Tables */
+  .tbl {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14px;
+  }
+
+  th,
+  td {
+    text-align: left;
+    vertical-align: top;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  tr:last-child td {
+    border-bottom: 0;
+  }
+
+  th {
+    font: 600 12px/1.3 var(--font-mono);
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface-2);
+  }
+
+  td.k {
+    white-space: nowrap;
+  }
+
+  .two {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  @media (max-width: 760px) {
+    .two {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  /* Passport anatomy */
+  .passport {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .passport div {
+    padding: 12px 16px 10px;
+    border-right: 1px solid var(--line);
+    display: grid;
+    gap: 4px;
+  }
+
+  .passport div:last-child {
+    border-right: 0;
+  }
+
+  .passport b {
+    font: 500 clamp(18px, 3.2vw, 26px)/1 var(--font-mono);
+    letter-spacing: .02em;
+  }
+
+  .passport div:nth-child(1) b {
+    color: var(--accent);
+  }
+
+  .passport span {
+    font-size: 12px;
+    color: var(--muted);
+    max-width: 18ch;
+  }
+
+  .lineage {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .lineage div {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    min-width: 0;
+    flex: 1 1 190px;
+  }
+
+  .lineage small {
+    display: block;
+    font: 600 11px/1.2 var(--font-mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .lineage code {
+    background: none;
+    padding: 0;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  /* Stage rail */
+  .stages {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .stages span {
+    font: 500 12px/1 var(--font-mono);
+    padding: 7px 9px;
+    border-radius: 5px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .stages span.skip {
+    text-decoration: line-through;
+    color: var(--muted);
+    border-style: dashed;
+  }
+
+  .stages span.done {
+    border-color: var(--ok);
+    color: var(--ok);
+  }
+
+  /* Code */
+  pre {
+    margin: 0;
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font: 400 13px/1.55 var(--font-mono);
+    color: var(--fg);
+  }
+
+  pre .c {
+    color: var(--muted);
+  }
+
+  pre .s {
+    color: var(--accent);
+  }
+
+  .codehead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: -8px;
+  }
+
+  .codehead span {
+    font: 600 12px/1 var(--font-mono);
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* Timeline */
+  ol.timeline {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 14px;
+    border-left: 2px solid var(--line);
+  }
+
+  ol.timeline li {
+    position: relative;
+    padding-left: 20px;
+    display: grid;
+    gap: 4px;
+  }
+
+  ol.timeline li::before {
+    content: "";
+    position: absolute;
+    left: -7px;
+    top: 6px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 2px solid var(--accent);
+  }
+
+  ol.timeline li.bad::before {
+    border-color: var(--err);
+  }
+
+  ol.timeline time {
+    font: 500 12.5px/1.2 var(--font-mono);
+    color: var(--muted);
+  }
+
+  ol.timeline p {
+    max-width: 72ch;
+  }
+
+  /* Open items */
+  ul.open {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+
+  ul.open li {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 14px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  ul.open li:last-child {
+    border-bottom: 0;
+  }
+
+  ul.open p {
+    max-width: 70ch;
+  }
+
+  @media (max-width: 520px) {
+    ul.open li {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+    }
+  }
+
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 12px 14px;
+    border-radius: 0 6px 6px 0;
+    max-width: 72ch;
+  }
+
+  footer {
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  footer .wrap {
+    padding-block: 20px 28px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * {
+      scroll-behavior: auto !important;
+    }
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">SAP → DataTwin · process guide</div>
+    <h1>SAP BSID Delta Ingestion</h1>
+    <p class="lede">Every minute the extraction worker checks SAP for new or changed customer open items, stores them in
+      <code>active_bsid</code> with a passportid, and sends only those rows to the Data Modelling &amp; Ingestion API,
+      which writes them to <code>active_bt3i</code> as invoices.</p>
+    <div class="meta">
+      <span><b>Tenant</b>DM00005</span>
+      <span><b>Org</b>OM0000000001</span>
+      <span><b>SAP</b>S/4HANA · client 200</span>
+      <span><b>Target</b>BT3I · Invoice</span>
+      <span><b>As of</b>19 Nov 2026</span>
+    </div>
+  </div>
+</header>
+
+<div class="flow-band" aria-label="Data flow">
+  <div class="wrap">
+    <ol class="flow">
+      <li>
+        <div class="node">SAP BSID</div>
+        <div class="sub">OData ZGENERIC_DATA_SRV</div>
+      </li>
+      <li>
+        <div class="node">Delta poller</div>
+        <div class="sub">every 60 s · full compare</div>
+      </li>
+      <li class="hot">
+        <div class="node">active_bsid</div>
+        <div class="sub">passportid · PENDING queue</div>
+      </li>
+      <li>
+        <div class="node">active_bsid_delta</div>
+        <div class="sub">claimed rows only</div>
+      </li>
+      <li>
+        <div class="node">Ingestion API</div>
+        <div class="sub">process_code=BT3I</div>
+      </li>
+      <li class="hot">
+        <div class="node">active_bt3i</div>
+        <div class="sub">AR invoices</div>
+      </li>
+    </ol>
+  </div>
+</div>
+
+<div class="wrap layout">
+  <nav class="toc" aria-label="Contents">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#steps">How a record moves</a></li>
+      <li><a href="#passport">passportid</a></li>
+      <li><a href="#status">Status values</a></li>
+      <li><a href="#call">Ingestion call</a></li>
+      <li><a href="#service">Ingestion service changes</a></li>
+      <li><a href="#tables">Tables</a></li>
+      <li><a href="#failures">When things fail</a></li>
+      <li><a href="#config">Configuration</a></li>
+      <li><a href="#run">Running it</a></li>
+      <li><a href="#monitor">Monitoring queries</a></li>
+      <li><a href="#first-run">First live run</a></li>
+      <li><a href="#open">Open items</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <section id="steps">
+      <h2>How a record moves</h2>
+      <p>The SAP OData service returns whole tables only: it has no date or key filter, and <code>WhereClause</code> is
+        not a property of <code>TableDataSet</code>. The worker therefore reads all of BSID each minute and works out
+        the changes on the DataTwin side. Sixty rows take about 4.5 seconds.</p>
+      <ol class="steps">
+        <li>
+          <div>
+            <h3>Poll SAP <span class="when">every 60 s</span></h3>
+            <p>The worker fetches BSID page by page and checks that it received as many rows as SAP's
+              <code>$count</code>. If the counts differ, it still applies new and changed rows but skips the removal
+              check for that minute.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Detect new, changed and removed rows</h3>
+            <p>Each row gets a <code>sap_key_hash</code> from the DDIC key (MANDT, BUKRS, KUNNR, UMSKS, UMSKZ, AUGDT,
+              AUGBL, ZUONR, GJAHR, BELNR, BUZEI) and a <code>row_hash</code> from its values.</p>
+            <ul>
+              <li>An unknown key is inserted with a new passportid as <span class="chip info">NEW</span> <span
+                  class="chip warn">PENDING</span>.</li>
+              <li>A changed hash becomes <span class="chip info">CHANGED</span> <span class="chip warn">PENDING</span>.
+              </li>
+              <li>A key missing for two polls becomes <span class="chip gone">REMOVED</span>.</li>
+            </ul>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Queue</h3>
+            <p>The <span class="chip warn">PENDING</span> rows in <code>active_bsid</code> are the queue. When no
+              ingestion run is active, the worker claims them as <span class="chip info">IN_PROGRESS</span> and stamps
+              them with a run id. Rows that arrive during a run wait for the next one.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Stage the batch</h3>
+            <p>The claimed rows are copied to <code>active_bsid_delta</code>: passportid plus the columns listed in
+              <code>columns_bsid</code>. The table is rebuilt for every run, so the ingestion service only ever sees the
+              current batch.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Call the ingestion API</h3>
+            <p><code>POST /api/ingest/table</code> carries <code>process_code=BT3I</code> and
+              <code>transaction_type=Invoice</code>. The service then:</p>
+            <ul>
+              <li>skips AI classification;</li>
+              <li>maps the columns with the BT3I theme and upserts them into <code>active_bt3i</code>;</li>
+              <li>writes <code>transaction_log</code>;</li>
+              <li>shows the run on its dashboard with a live log.</li>
+            </ul>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h3>Close the run</h3>
+            <p>Success marks the rows <span class="chip ok">DONE</span> with <code>ingested_at</code>. A failure sends
+              them back to <span class="chip warn">PENDING</span>, and they become <span class="chip err">FAILED</span>
+              after the third attempt. The next run starts only after this one has finished.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section id="passport">
+      <h2>passportid</h2>
+      <p>Every SAP record that reaches DataTwin gets one passportid the first time the poller sees it. The id never
+        changes, even when the SAP values change or the table is re-read. The ingestion service carries it into
+        <code>active_bt3i</code>, so a record can be traced from SAP to the target table.</p>
+      <div class="passport" aria-label="passportid PPSAP0126270000059 broken into parts">
+        <div><b>PPSAP</b><span>Prefix for SAP-sourced records</span></div>
+        <div><b>01</b><span>Last two digits of org OM0000000001</span></div>
+        <div><b>2627</b><span>Financial year Apr 2026 – Mar 2027</span></div>
+        <div><b>0000059</b><span>Sequence from MASTEROBJECTSEQUENCINGV2</span></div>
+      </div>
+      <h3>One record, end to end</h3>
+      <div class="lineage">
+        <div><small>SAP BSID key</small><code>DAT1 · 4800000019 · 2026 · 001</code></div>
+        <div><small>active_bsid</small><code>PPSAP0126270000059</code></div>
+        <div><small>Ingestion run</small><code>TR_SAP_BSID_20261119000339_219469</code></div>
+        <div><small>active_bt3i</small><code>passportid = PPSAP0126270000059</code></div>
+      </div>
+    </section>
+
+    <section id="status">
+      <h2>Status values</h2>
+      <div class="two">
+        <div class="tbl">
+          <table>
+            <thead>
+              <tr>
+                <th>sap_status</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="k"><span class="chip acc">ACTIVE</span></td>
+                <td>In SAP and unchanged since it was first stored.</td>
+              </tr>
+              <tr>
+                <td class="k"><span class="chip info">NEW</span></td>
+                <td>First seen by the poller.</td>
+              </tr>
+              <tr>
+                <td class="k"><span class="chip info">CHANGED</span></td>
+                <td>Values changed in SAP since it was last seen.</td>
+              </tr>
+              <tr>
+                <td class="k"><span class="chip gone">REMOVED</span></td>
+                <td>Missing from BSID for two polls, usually because the item was cleared and moved to BSAD. The row is
+                  kept and is not sent to ingestion.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tbl">
+          <table>
+            <thead>
+              <tr>
+                <th>ingestion_status</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="k"><span class="chip warn">PENDING</span></td>
+                <td>Waiting for the next ingestion run.</td>
+              </tr>
+              <tr>
+                <td class="k"><span class="chip info">IN_PROGRESS</span></td>
+                <td>Claimed by the run in <code>ingestion_run_id</code>.</td>
+              </tr>
+              <tr>
+                <td class="k"><span class="chip ok">DONE</span></td>
+                <td>Ingested, or already loaded before the delta sync started.</td>
+              </tr>
+              <tr>
+                <td class="k"><span class="chip err">FAILED</span></td>
+                <td>Failed three times. Re-queue it with <code>cli.py delta-retry BSID</code>.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p class="prose">Open items as SAP shows them today: <code>WHERE sap_status &lt;&gt; 'REMOVED'</code>. A changed
+        row goes back to <span class="chip warn">PENDING</span> even if it had been <span class="chip ok">DONE</span>,
+        so the new values are ingested as well.</p>
+    </section>
+
+    <section id="call">
+      <h2>Ingestion call</h2>
+      <p>The call is synchronous: the service maps and upserts the batch before it answers, which took about 2½ minutes
+        for the first BT3I batch. The client waits up to 30 minutes. If the answer is lost, it looks up the
+        <code>transaction_id</code> in <code>transaction_log</code> and uses that status.</p>
+      <div class="two">
+        <div style="display:grid;gap:12px;min-width:0">
+          <div class="codehead"><span>Request</span></div>
+          <pre>POST /api/ingest/table
+{
+  <span class="s">"db"</span>: "dm00005",
+  <span class="s">"table_name"</span>: "active_bsid_delta",
+  <span class="s">"tenant_id"</span>: "DM00005",
+  <span class="s">"org_id"</span>: "OM0000000001",
+  <span class="s">"transaction_id"</span>: "TR_SAP_BSID_20261119000339_219469",
+  <span class="s">"process_code"</span>: "BT3I",
+  <span class="s">"transaction_type"</span>: "Invoice"
+}</pre>
+        </div>
+        <div style="display:grid;gap:12px;min-width:0">
+          <div class="codehead"><span>Response</span></div>
+          <pre>{
+  <span class="s">"success"</span>: true,
+  <span class="s">"job_id"</span>: "TR_SAP_BSID_20261119000339_219469",
+  <span class="s">"status"</span>: "completed",
+  <span class="s">"data"</span>: {
+    <span class="s">"status"</span>: "Success",
+    <span class="s">"target_process_code"</span>: "BT3I",
+    <span class="s">"process_code_source"</span>: "caller",
+    <span class="s">"target_table"</span>: "active_bt3i"
+  }
+}</pre>
+        </div>
+      </div>
+      <h3>What the dashboard shows for the run</h3>
+      <div class="stages" aria-label="Ingestion job stages">
+        <span class="done">QUEUED</span><span class="done">READING_FILE</span><span class="skip"
+          title="Skipped because process_code was given">AI_CLASSIFICATION</span><span
+          class="done">PROCESS_METADATA</span><span class="done">THEME_MAPPING</span><span
+          class="done">UPSERT</span><span class="done">EXPORT</span><span class="done">COMPLETED</span>
+      </div>
+      <p class="prose">The job appears in the JOBS list as <code>dm00005.active_bsid_delta</code>. Its full log is saved
+        as <code>logs/jobs/&lt;transaction_id&gt;.log</code> in the ingestion service folder.</p>
+    </section>
+
+    <section id="service">
+      <h2>Ingestion service changes <span class="tag">data_modelling-ingestion · not committed yet</span></h2>
+      <p>The AI classifier put BSID rows into GLE (General Ledger Entry) every time, including the earlier
+        <code>bsid_view</code> loads. API ingestions also never appeared on the dashboard. These changes fix both. Calls
+        that send none of the new fields behave as before.</p>
+      <div class="tbl">
+        <table>
+          <thead>
+            <tr>
+              <th>Change</th>
+              <th>File</th>
+              <th>Effect</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>process_code</code>, <code>transaction_type</code>, <code>theme_name</code> on
+                <code>/api/ingest/table</code>, <code>/file</code> and <code>/api/ingest</code></td>
+              <td class="k"><code>api.py</code>, <code>app.py</code></td>
+              <td>With a process code, AI classification is skipped. A theme name pins an existing theme from
+                <code>theme_mapping</code>.</td>
+            </tr>
+            <tr>
+              <td>Caller values win for <code>orgid</code> and <code>transactiontype</code></td>
+              <td class="k"><code>app.py</code></td>
+              <td>The AI theme had mapped BUKRS to OrgID (<code>DAT1</code>) and BLART to TransactionType
+                (<code>RV</code>).</td>
+            </tr>
+            <tr>
+              <td>Every API ingestion is a dashboard job</td>
+              <td class="k"><code>api.py</code>, <code>job_manager.py</code></td>
+              <td>Table and file ingestions show stages and live log in <code>/dashboard</code> and
+                <code>/api/jobs</code>. The response stays synchronous; <code>"wait": false</code> queues the job and
+                returns its id.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">The service on port 8050 is still running the old code. Restart it (<code>python api.py</code>)
+        before the worker runs. Until then BSID rows would go to GLE again.</p>
+    </section>
+
+    <section id="tables">
+      <h2>Tables</h2>
+      <div class="tbl">
+        <table>
+          <thead>
+            <tr>
+              <th>Table</th>
+              <th>Role</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="k"><code>active_bsid</code></td>
+              <td>Copy of SAP BSID. Column types come from the SAP dictionary: amounts as <code>double precision</code>,
+                NUMC as <code>bigint</code>, the rest as text. It also holds the control columns:
+                <code>passportid</code>, <code>sap_key_hash</code>, <code>row_hash</code>, <code>sap_status</code>,
+                <code>ingestion_status</code>, <code>ingestion_run_id</code>, <code>retry_count</code>,
+                <code>error_message</code>, <code>missing_count</code>, <code>first_seen_at</code>,
+                <code>last_seen_at</code>, <code>changed_at</code>, <code>removed_at</code>, <code>ingested_at</code>.
+              </td>
+            </tr>
+            <tr>
+              <td class="k"><code>active_bsid_delta</code></td>
+              <td>Staging table for the current batch, rebuilt every run.</td>
+            </tr>
+            <tr>
+              <td class="k"><code>sap_ingestion_run</code></td>
+              <td>One row per run. <code>run_id</code> is the <code>transaction_id</code> sent to the API. A unique
+                index allows only one <code>RUNNING</code> row.</td>
+            </tr>
+            <tr>
+              <td class="k"><code>sap_extraction_state</code></td>
+              <td>Last poll per table: SAP count, rows fetched, new / changed / removed, last error.</td>
+            </tr>
+            <tr>
+              <td class="k"><code>transaction_log</code></td>
+              <td>Written by the ingestion service per transaction id. Used when the HTTP answer is lost.</td>
+            </tr>
+            <tr>
+              <td class="k"><code>active_bt3i</code></td>
+              <td>Target. Rows from this flow have <code>input = table://dm00005/active_bsid_delta</code> and carry
+                <code>passportid</code> and <code>transactionid</code>.</td>
+            </tr>
+            <tr>
+              <td class="k"><code>active_bsid_bak_20261118_234602</code></td>
+              <td>The table as it was before the delta sync started.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="failures">
+      <h2>When things fail</h2>
+      <div class="tbl">
+        <table>
+          <thead>
+            <tr>
+              <th>Situation</th>
+              <th>What happens</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>SAP down or OData error</td>
+              <td>Nothing changes in the database. The error is saved in <code>sap_extraction_state.last_error</code>
+                and the next poll tries again.</td>
+            </tr>
+            <tr>
+              <td>Fewer rows received than SAP's <code>$count</code></td>
+              <td>New and changed rows are applied. The removal check waits for a complete read.</td>
+            </tr>
+            <tr>
+              <td>Ingestion returns a failure</td>
+              <td>Rows go back to <span class="chip warn">PENDING</span> with <code>retry_count + 1</code>. After three
+                attempts they are <span class="chip err">FAILED</span>.</td>
+            </tr>
+            <tr>
+              <td>No answer from the ingestion API</td>
+              <td>The client reads <code>transaction_log</code> for its transaction id. <code>Success</code> marks the
+                rows done. Anything else re-queues them; the service's upsert is idempotent, so a resend does not
+                duplicate rows.</td>
+            </tr>
+            <tr>
+              <td>Worker stopped during a run</td>
+              <td>On the next start it finishes the <code>RUNNING</code> run first, then claims new rows.</td>
+            </tr>
+            <tr>
+              <td>Second run while one is active</td>
+              <td>Refused by a file lock and the database index. The API answers 409; cron exits with code 75.</td>
+            </tr>
+            <tr>
+              <td>Full reload of BSID requested</td>
+              <td>Refused with 400. A full reload would drop the table and its passportids.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="config">
+      <h2>Configuration</h2>
+      <p>In <code>config.ini</code> of <code>sap-extraction-api</code>. Every key can also be set as an environment
+        variable, for example <code>INGESTION_BASE_URL</code> or <code>DELTA_TABLES</code>.</p>
+      <pre>[delta]
+tables = BSID
+poll_seconds = 60
+missing_polls_before_removed = 2
+passport_prefix = PPSAP
+
+[ingestion]
+enabled = true
+base_url = http://&lt;ingestion-host&gt;:8050      <span class="c">; must be reachable from the server</span>
+batch_size = 5000
+job_timeout_minutes = 30
+max_retries = 3
+process_code_bsid = BT3I
+transaction_type_bsid = Invoice
+theme_name_bsid =                         <span class="c">; empty = theme picked once, then reused</span>
+columns_bsid = bukrs, kunnr, belnr, gjahr, buzei, blart, bldat, budat, cpudt, xblnr, zuonr,
+               waers, dmbtr, wrbtr, shkzg, zfbdt, zterm, zbd1t, sgtxt, xref1, xref2, xref3,
+               augdt, augbl, gsber, hkont, mwskz</pre>
+      <p class="prose">Keep <code>columns_bsid</code> short. The ingestion service adds every column it cannot map as a
+        new column of the target table.</p>
+    </section>
+
+    <section id="run">
+      <h2>Running it</h2>
+      <div class="two">
+        <div style="display:grid;gap:12px;min-width:0">
+          <div class="codehead"><span>Command line</span></div>
+          <pre><span class="c"># one time per table</span>
+python cli.py delta-init BSID
+
+<span class="c"># every 60 s: poll + ingestion</span>
+python cli.py worker
+
+python cli.py delta-status
+python cli.py delta-retry BSID
+
+<span class="c"># Linux server</span>
+sudo systemctl enable --now sap-extraction-worker</pre>
+        </div>
+        <div class="tbl" style="align-self:start">
+          <table>
+            <thead>
+              <tr>
+                <th>API (port 8002)</th>
+                <th>Does</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="k"><code>GET /api/delta/status</code></td>
+                <td>Counts, last poll, recent runs</td>
+              </tr>
+              <tr>
+                <td class="k"><code>POST /api/delta/poll</code></td>
+                <td>Poll SAP now</td>
+              </tr>
+              <tr>
+                <td class="k"><code>POST /api/delta/ingest</code></td>
+                <td>Start a run in the background</td>
+              </tr>
+              <tr>
+                <td class="k"><code>POST /api/delta/retry</code></td>
+                <td>FAILED back to PENDING</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="monitor">
+      <h2>Monitoring queries</h2>
+      <pre><span class="c">-- what is waiting or stuck</span>
+SELECT passportid, belnr, xblnr, kunnr, dmbtr, sap_status, ingestion_status, retry_count, error_message
+FROM active_bsid WHERE ingestion_status &lt;&gt; 'DONE' ORDER BY first_seen_at;
+
+<span class="c">-- one record from SAP to BT3I</span>
+SELECT b.passportid, b.belnr, b.ingestion_run_id, r.status, t.processcode, t.themename, t.documentnumber
+FROM active_bsid b
+LEFT JOIN sap_ingestion_run r ON r.run_id = b.ingestion_run_id
+LEFT JOIN active_bt3i t ON t.passportid = b.passportid
+WHERE b.passportid = 'PPSAP0126270000059';
+
+<span class="c">-- recent runs</span>
+SELECT run_id, status, record_count, started_at, finished_at, error
+FROM sap_ingestion_run ORDER BY started_at DESC LIMIT 20;</pre>
+    </section>
+
+    <section id="first-run">
+      <h2>First live run</h2>
+      <ol class="timeline">
+        <li><time>18 Nov 2026 · 23:46</time>
+          <p><b>Delta init.</b> SAP returned 60 BSID rows:</p>
+          <ul>
+            <li>58 were already loaded: <span class="chip acc">ACTIVE</span> <span class="chip ok">DONE</span>, not
+              ingested again.</li>
+            <li>Invoices 4800000019 (₹28,00,140) and 4800000020 (₹1,88,800) were new: <span
+                class="chip warn">PENDING</span>.</li>
+            <li>The cleared invoice 4800000008 was kept as <span class="chip gone">REMOVED</span>.</li>
+          </ul>
+          <p>The ids PPSAP0126270000001 to …061 were assigned.</p>
+        </li>
+        <li class="bad"><time>18 Nov 2026 · 23:46 – 23:48</time>
+          <p><b>First ingestion went to GLE.</b> Without a process code, the AI classified the rows as General Ledger
+            Entry and wrote them to <code>active_gle</code>. The service finished at 23:47:58, but the client stopped
+            waiting after 120 seconds. The two GLE rows were deleted. The client now waits for the full response and
+            checks <code>transaction_log</code>.</p>
+        </li>
+        <li><time>19 Nov 2026 · 00:03:42 – 00:06:20</time>
+          <p><b>Ingested into BT3I.</b> Run <code>TR_SAP_BSID_20261119000339_219469</code> with
+            <code>process_code=BT3I</code> wrote both invoices to <code>active_bt3i</code> under the new theme
+            <code>Inv_BT3I_01</code>, with <code>orgid</code> OM0000000001 and passportids attached.
+            <code>transactiontype</code> arrived as <code>RV</code> and was corrected to <code>Invoice</code>; the
+            service now forces it.</p>
+        </li>
+      </ol>
+    </section>
+
+    <section id="open">
+      <h2>Open items</h2>
+      <ul class="open">
+        <li><span><span class="chip err">Blocker</span></span>
+          <p>Restart the ingestion service on port 8050 so it runs the new code. Then create <code>config.ini</code>
+            with the <code>[delta]</code> and <code>[ingestion]</code> sections and start
+            <code>python cli.py worker</code>.</p>
+        </li>
+        <li><span><span class="chip warn">Decide</span></span>
+          <p><b>Theme <code>Inv_BT3I_01</code></b> does not follow the existing SAP invoice convention. Bank clearing
+            and the AR Inbox read <code>senderaccount</code>, <code>documentvalue</code> and
+            <code>documentnumber</code>.</p>
+          <ul>
+            <li>It maps KUNNR to ReceiverAccount instead of SenderAccount.</li>
+            <li>It maps DMBTR to AmountInLocalCurrency, so DocumentValue and BaseValue stay empty.</li>
+            <li>It uses BELNR as DocumentNumber, where earlier SAP rows use XBLNR.</li>
+          </ul>
+          <p>Correct the mapping, then pin it with <code>theme_name_bsid</code>.</p>
+        </li>
+        <li><span><span class="chip warn">Decide</span></span>
+          <p>The first BT3I run added 79 unmapped SAP columns to <code>active_bt3i</code>, which now has 256 columns.
+            Only the two new rows use them. They can be dropped; later runs send only <code>columns_bsid</code>.</p>
+        </li>
+        <li><span><span class="chip info">Deploy</span></span>
+          <p>On the server, <code>base_url</code> must point to an ingestion service the server can reach.
+            The office LAN address used while testing is not reachable from a server.</p>
+        </li>
+        <li><span><span class="chip info">Repo</span></span>
+          <p>Review and commit the changes to <code>api.py</code>, <code>app.py</code> and <code>job_manager.py</code>
+            in <code>data_modelling-ingestion</code>.</p>
+        </li>
+        <li><span><span class="chip gone">Tidy</span></span>
+          <p>Drop <code>active_bsid_bak_20261118_234602</code> once the flow has run cleanly for a while. The AI-made
+            GLE theme <code>GLE_LdgrEnt</code> from the first run is still in <code>theme_mapping</code>.</p>
+        </li>
+      </ul>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">Source: <code>sap-extraction-api</code> (delta.py, ingestion.py, worker.py) and the local Data
+    Modelling &amp; Ingestion service. Figures are from the runs on 18–19 Nov 2026.</div>
+</footer>

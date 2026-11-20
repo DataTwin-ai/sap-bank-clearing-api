@@ -1,0 +1,24 @@
+# systemd unit for the delta worker: polls SAP every [delta] poll_seconds and
+# sends new / changed rows to the ingestion API (one run at a time).
+#   sudo cp deploy/sap-extraction-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sap-extraction-worker
+#   journalctl -u sap-extraction-worker -f        (also log/worker.log)
+[Unit]
+Description=SAP Extraction delta worker (1-minute SAP poll + ingestion queue)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sapapp
+Group=sapapp
+WorkingDirectory=/opt/sap-extraction-api
+EnvironmentFile=-/opt/sap-extraction-api/.env
+ExecStart=/opt/sap-extraction-api/.venv/bin/python cli.py worker
+Restart=always
+RestartSec=10
+# Give a running poll time to commit; an unfinished ingestion job is resumed after restart
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

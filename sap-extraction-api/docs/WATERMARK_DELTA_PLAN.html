@@ -1,0 +1,289 @@
+<title>BSID Watermark Delta Plan</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: plan document; status band, today-vs-planned pair, a minute-by-minute timeline, then spec tables */
+:root {
+  --bg: #f5f8f8;
+  --surface: #ffffff;
+  --surface-2: #ecf2f2;
+  --fg: #13201f;
+  --muted: #56686b;
+  --line: #d3dede;
+  --accent: #0a6b6b;
+  --accent-soft: #dcefed;
+  --ok: #11785a;   --ok-soft: #dcf2e9;
+  --warn: #9a5a00; --warn-soft: #fbefd8;
+  --err: #b0253a;  --err-soft: #fbe4e7;
+  --info: #1f5aa6; --info-soft: #e1ebf8;
+  --gone: #61696e; --gone-soft: #eceeef;
+  --code-bg: #eef3f3;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-head: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c1313; --surface: #121c1c; --surface-2: #192525; --fg: #e2ebea; --muted: #94a6a7; --line: #2a3838;
+    --accent: #52c4ba; --accent-soft: #123230;
+    --ok: #4fd39c; --ok-soft: #10302a; --warn: #f0b04c; --warn-soft: #33260f;
+    --err: #f27a89; --err-soft: #3a171e; --info: #7eb0f2; --info-soft: #13253c;
+    --gone: #a3abaf; --gone-soft: #232a2c; --code-bg: #0f1818;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c1313; --surface: #121c1c; --surface-2: #192525; --fg: #e2ebea; --muted: #94a6a7; --line: #2a3838;
+  --accent: #52c4ba; --accent-soft: #123230;
+  --ok: #4fd39c; --ok-soft: #10302a; --warn: #f0b04c; --warn-soft: #33260f;
+  --err: #f27a89; --err-soft: #3a171e; --info: #7eb0f2; --info-soft: #13253c;
+  --gone: #a3abaf; --gone-soft: #232a2c; --code-bg: #0f1818;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+.wrap {
+  max-width: 980px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font-family: var(--font-mono); font-size: .9em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+h1, h2, h3 { font-family: var(--font-head); line-height: 1.2; margin: 0; text-wrap: balance; }
+p { margin: 0; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+
+header.top { background: var(--surface); border-bottom: 1px solid var(--line); }
+header.top .wrap { padding-block: 34px 26px; display: grid; gap: 12px; }
+.eyebrow { font: 600 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: clamp(28px, 4.6vw, 42px); font-weight: 700; }
+.lede { max-width: 68ch; color: var(--muted); font-size: 16px; }
+.status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.status span { font: 500 12.5px/1 var(--font-mono); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.status .pending { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
+
+main.wrap { display: grid; gap: 48px; padding-block: 34px 60px; }
+section { display: grid; gap: 14px; min-width: 0; }
+section > h2 { font-size: 24px; font-weight: 600; }
+section > p, .prose { max-width: 70ch; }
+h3 { font-size: 16.5px; font-weight: 600; }
+
+/* Today vs planned */
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.pair > div { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: var(--surface); display: grid; gap: 10px; align-content: start; min-width: 0; }
+.pair > div.planned { border-color: var(--accent); }
+.pair .label { font: 600 11.5px/1 var(--font-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.pair .planned .label { color: var(--accent); }
+.pair dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; font-size: 14px; }
+.pair dt { color: var(--muted); }
+.pair dd { margin: 0; font-weight: 500; }
+@media (max-width: 680px) { .pair { grid-template-columns: minmax(0, 1fr); } }
+
+/* Timeline (real sequence of minutes) */
+.tl { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden; }
+.tl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr) 120px; gap: 14px; padding: 13px 16px; border-bottom: 1px solid var(--line); align-items: baseline; }
+.tl > div:last-child { border-bottom: 0; }
+.tl time { font: 600 15px/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+.tl .what b { display: block; font-weight: 600; }
+.tl .what span { font-size: 13.5px; color: var(--muted); }
+.tl .rows { font: 600 13px/1.2 var(--font-mono); text-align: right; font-variant-numeric: tabular-nums; }
+.tl .full .rows { color: var(--info); }
+.tl .zero .rows { color: var(--muted); }
+.tl .one .rows { color: var(--ok); }
+@media (max-width: 560px) {
+  .tl > div { grid-template-columns: 70px minmax(0, 1fr); }
+  .tl .rows { grid-column: 2; text-align: left; }
+}
+
+/* Tables */
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+th { font: 600 11.5px/1.3 var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+td.k { white-space: nowrap; }
+.yes { color: var(--ok); font-weight: 600; }
+.no { color: var(--err); font-weight: 600; }
+.chip { display: inline-block; font: 600 11.5px/1 var(--font-mono); letter-spacing: .03em; padding: 4px 7px; border-radius: 4px; white-space: nowrap; }
+.chip.ok { color: var(--ok); background: var(--ok-soft); }
+.chip.warn { color: var(--warn); background: var(--warn-soft); }
+.chip.err { color: var(--err); background: var(--err-soft); }
+.chip.info { color: var(--info); background: var(--info-soft); }
+.chip.gone { color: var(--gone); background: var(--gone-soft); }
+.chip.acc { color: var(--accent); background: var(--accent-soft); }
+
+pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font: 400 13px/1.55 var(--font-mono); color: var(--fg); }
+pre .c { color: var(--muted); }
+pre .k { color: var(--accent); font-weight: 500; }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 14px; border-radius: 0 6px 6px 0; max-width: 70ch; }
+
+/* Build steps: a real order of work */
+ol.build { list-style: none; margin: 0; padding: 0; display: grid; counter-reset: b; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+ol.build li { counter-increment: b; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); align-items: baseline; }
+ol.build li:last-child { border-bottom: 0; }
+ol.build li::before { content: counter(b); font: 600 14px/1 var(--font-mono); color: var(--accent); }
+ol.build p { max-width: 64ch; }
+ol.build .who { font: 500 12px/1 var(--font-mono); color: var(--muted); white-space: nowrap; }
+@media (max-width: 560px) { ol.build li { grid-template-columns: 26px minmax(0, 1fr); } ol.build .who { grid-column: 2; } }
+
+footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+footer .wrap { padding-block: 18px 26px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">SAP → DataTwin · plan</div>
+    <h1>BSID Watermark Delta Plan</h1>
+    <p class="lede">Load BSID in full once. After that, ask SAP every minute only for the documents entered, changed or cleared since the last pull, using the entry and change timestamps SAP already keeps. The poller no longer reads the whole table each minute.</p>
+    <div class="status">
+      <span class="pending">Proposed · needs approval for a new SAP object</span>
+      <span>SAP S/4HANA · client 200</span>
+      <span>19 Nov 2026</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>Today and after the change</h2>
+    <div class="pair">
+      <div>
+        <span class="label">Today</span>
+        <dl>
+          <dt>Every minute</dt><dd>Read all of BSID (60 rows, about 4.5 s)</dd>
+          <dt>New rows found by</dt><dd>Comparing every row's key fingerprint in DataTwin</dd>
+          <dt>Cleared items</dt><dd>Missing from BSID for 2 polls</dd>
+          <dt>SAP change</dt><dd>None</dd>
+          <dt>Cost grows with</dt><dd>Table size</dd>
+        </dl>
+      </div>
+      <div class="planned">
+        <span class="label">Planned</span>
+        <dl>
+          <dt>Once</dt><dd>Full load, then save the watermark</dd>
+          <dt>Every minute</dt><dd>SAP returns only documents since the watermark, usually 0 or 1</dd>
+          <dt>Cleared items</dt><dd>SAP reports them directly from BSAD</dd>
+          <dt>SAP change</dt><dd>One read-only RFC function</dd>
+          <dt>Cost grows with</dt><dd>Number of new postings</dd>
+          <dt>Safety net</dt><dd>Full compare once a day</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Example: one morning</h2>
+    <div class="tl">
+      <div class="full"><time>10:00</time><div class="what"><b>Full load</b><span>All 60 rows are stored. Watermark = SAP's own clock when the read ran.</span></div><span class="rows">60 rows</span></div>
+      <div class="zero"><time>10:01</time><div class="what"><b>Delta pull</b><span>"Anything entered, changed or cleared since 09:55?" (watermark minus 5 min overlap). Nothing new. The table is not read.</span></div><span class="rows">0 rows</span></div>
+      <div class="zero"><time>10:02 – 10:04</time><div class="what"><b>Delta pull</b><span>Same question, moving the watermark forward each time.</span></div><span class="rows">0 rows</span></div>
+      <div class="one"><time>10:05</time><div class="what"><b>Delta pull</b><span>An invoice was posted at 10:04:31. SAP returns that one row. It gets a passportid, becomes PENDING, and goes to ingestion.</span></div><span class="rows">1 row</span></div>
+      <div class="full"><time>02:00</time><div class="what"><b>Nightly full compare</b><span>The whole table is read once and compared, as today, to catch anything the timestamps did not show.</span></div><span class="rows">all rows</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Why this needs a change in SAP</h2>
+    <p>Both of these were tested against the live system.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Check</th><th>Result</th><th>What it means</th></tr></thead>
+      <tbody>
+        <tr><td>Filter the OData service by a field, for example <code>CPUDT ge '20261101'</code></td><td class="no">HTTP 400</td><td><code>ZGENERIC_DATA_SRV</code> only accepts a table name. SAP cannot be asked for "rows since X" today.</td></tr>
+        <tr><td>Pass a <code>WhereClause</code></td><td class="no">HTTP 400</td><td>The entity has no such property; adding one means changing the Gateway model in SEGW.</td></tr>
+        <tr><td>Date and time fields in BSID</td><td><code>CPUDT</code>, <code>BUDAT</code>, <code>AUGDT</code></td><td>Entry date only, no entry time and no changed-on date.</td></tr>
+        <tr><td>Date and time fields in BKPF (document header)</td><td><code>CPUDT</code> + <code>CPUTM</code>, <code>AEDAT</code>, <code>UPDDT</code></td><td>Entry date and time, changed-on date, last update date. The delta query has to join BKPF.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>SAP side: function <code>Z_BSID_DELTA</code></h2>
+    <p>A remote-enabled, read-only function module created through ADT in package <code>$TMP</code>, the same way as <code>Z_BANK_POST_CLEAR</code>. DataTwin calls it over SOAP-RFC (<code>/sap/bc/soap/rfc</code>) with the existing SAP user. It posts nothing.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Parameter</th><th>Type</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><code>IV_FROM_DATE</code></td><td class="k">DATS</td><td>Watermark date (SAP time)</td></tr>
+        <tr><td class="k"><code>IV_FROM_TIME</code></td><td class="k">TIMS</td><td>Watermark time (SAP time)</td></tr>
+        <tr><td class="k"><code>IV_BUKRS</code></td><td class="k">BUKRS, optional</td><td>Limit to one company code</td></tr>
+        <tr><td class="k"><code>IV_MAX_ROWS</code></td><td class="k">INT4</td><td>Safety limit per call; more rows set <code>EV_MORE</code></td></tr>
+        <tr><td class="k"><code>EV_SNAPSHOT_DATE</code> / <code>_TIME</code></td><td class="k">DATS / TIMS</td><td>SAP's clock when the query started. This becomes the next watermark.</td></tr>
+        <tr><td class="k"><code>EV_ROWS_JSON</code></td><td class="k">STRING</td><td>New and changed BSID rows, all columns, as JSON</td></tr>
+        <tr><td class="k"><code>EV_CLEARED_JSON</code></td><td class="k">STRING</td><td>Keys of BSAD items cleared since the watermark</td></tr>
+        <tr><td class="k"><code>EV_MORE</code></td><td class="k">FLAG</td><td>More rows than <code>IV_MAX_ROWS</code>; call again</td></tr>
+      </tbody>
+    </table></div>
+<pre><span class="c">" new or changed open items</span>
+<span class="k">SELECT</span> b~* <span class="k">FROM</span> bsid_view <span class="k">AS</span> b
+  <span class="k">INNER JOIN</span> bkpf <span class="k">AS</span> k <span class="k">ON</span> k~bukrs = b~bukrs <span class="k">AND</span> k~belnr = b~belnr <span class="k">AND</span> k~gjahr = b~gjahr
+  <span class="k">WHERE</span> ( k~cpudt &gt; @iv_from_date <span class="k">OR</span> ( k~cpudt = @iv_from_date <span class="k">AND</span> k~cputm &gt;= @iv_from_time ) )
+     <span class="k">OR</span> k~aedat &gt;= @iv_from_date
+     <span class="k">OR</span> k~upddt &gt;= @iv_from_date
+
+<span class="c">" items cleared since the watermark (clearing document entered after it)</span>
+<span class="k">SELECT</span> a~bukrs, a~kunnr, a~belnr, a~gjahr, a~buzei, a~augbl, a~augdt <span class="k">FROM</span> bsad_view <span class="k">AS</span> a
+  <span class="k">INNER JOIN</span> bkpf <span class="k">AS</span> c <span class="k">ON</span> c~bukrs = a~bukrs <span class="k">AND</span> c~belnr = a~augbl <span class="k">AND</span> c~gjahr = a~auggj
+  <span class="k">WHERE</span> c~cpudt &gt; @iv_from_date <span class="k">OR</span> ( c~cpudt = @iv_from_date <span class="k">AND</span> c~cputm &gt;= @iv_from_time )</pre>
+    <p class="prose"><code>AEDAT</code> and <code>UPDDT</code> are dates without a time, so a document changed today is returned on every pull until midnight. DataTwin's row fingerprint sees no difference and writes nothing, so this costs a few rows per call and nothing more.</p>
+  </section>
+
+  <section>
+    <h2>DataTwin side</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Change</th><th>Where</th></tr></thead>
+      <tbody>
+        <tr><td>New poll mode <code>watermark</code>: call <code>Z_BSID_DELTA</code> instead of reading the whole table</td><td class="k"><code>delta.py</code></td></tr>
+        <tr><td>Save <code>watermark_date</code> / <code>watermark_time</code> per table after each successful call, from <code>EV_SNAPSHOT_*</code></td><td class="k"><code>sap_extraction_state</code></td></tr>
+        <tr><td>Returned rows go through the same fingerprint check as today: new → <span class="chip info">NEW</span> <span class="chip warn">PENDING</span>, changed → <span class="chip info">CHANGED</span> <span class="chip warn">PENDING</span>, same → nothing</td><td class="k"><code>delta.py</code></td></tr>
+        <tr><td>Keys in <code>EV_CLEARED_JSON</code> become <span class="chip gone">REMOVED</span> at once. SAP confirms the clearing, so the 2-poll wait is not needed.</td><td class="k"><code>delta.py</code></td></tr>
+        <tr><td>Nightly full compare with the current logic</td><td class="k"><code>cli.py delta-poll --full</code>, cron 02:00</td></tr>
+        <tr><td>No change to passportid, the PENDING queue or ingestion</td><td class="k">–</td></tr>
+      </tbody>
+    </table></div>
+<pre>[delta]
+tables = BSID
+mode = watermark              <span class="c">; full | watermark</span>
+overlap_minutes = 5
+watermark_function_bsid = Z_BSID_DELTA
+full_compare_at = 02:00</pre>
+  </section>
+
+  <section>
+    <h2>Risks and how the plan handles them</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Risk</th><th>Safeguard</th></tr></thead>
+      <tbody>
+        <tr><td>SAP's clock and the DataTwin server differ in time zone or drift</td><td>The watermark always comes from SAP (<code>EV_SNAPSHOT_*</code>). The DataTwin clock is never used.</td></tr>
+        <tr><td>A document is stamped at 10:04:59 but committed a few seconds later, after the pull</td><td>Each pull starts 5 minutes before the watermark. Rows seen twice match their fingerprint and are skipped.</td></tr>
+        <tr><td>A cleared invoice disappears from BSID</td><td>The function reports BSAD items cleared since the watermark.</td></tr>
+        <tr><td>Some field changes do not update <code>AEDAT</code> / <code>UPDDT</code></td><td>The nightly full compare catches them. If that is not good enough, read the SAP change log <code>CDHDR</code> (object <code>BELEG</code>, <code>UDATE</code> + <code>UTIME</code>) instead.</td></tr>
+        <tr><td>Watermark lost or the function fails</td><td>The poller falls back to a full read for that minute. Nothing is missed; it is just slower.</td></tr>
+        <tr><td>Very large backlog after downtime</td><td><code>IV_MAX_ROWS</code> + <code>EV_MORE</code> page the result.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Build steps</h2>
+    <ol class="build">
+      <li><p>Approve creating <code>Z_BSID_DELTA</code> in SAP (package <code>$TMP</code>, read-only).</p><span class="who">you</span></li>
+      <li><p>Create and activate the function through ADT; mark it remote-enabled.</p><span class="who">Claude</span></li>
+      <li><p>Call it over SOAP-RFC with an old watermark and check the rows against BSID.</p><span class="who">Claude</span></li>
+      <li><p>Add the <code>watermark</code> mode, watermark columns and nightly full compare to the poller.</p><span class="who">Claude</span></li>
+      <li><p>Run both modes side by side for a day and compare what each one finds.</p><span class="who">Claude + you</span></li>
+      <li><p>Switch BSID to <code>mode = watermark</code>; keep the nightly full compare.</p><span class="who">you</span></li>
+      <li><p>Move the function from <code>$TMP</code> into a transportable package before production.</p><span class="who">SAP Basis</span></li>
+    </ol>
+    <p class="note">For BSID at 60 rows the time saved is small: about 4.5 seconds a minute. The plan matters when tables with many rows are added (BSEG, ACDOCA, BKPF), where a full read every minute is not workable.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Related:</span>
+    <a href="https://claude.ai/artifact/U1wByAUqvYNeSUzu4B1EfB" target="_blank" rel="noopener">SAP BSID Delta Ingestion (process guide)</a>
+    <a href="https://claude.ai/artifact/CaVyTsLPWamSqCS6jiaLqv" target="_blank" rel="noopener">BSID New Record Detection</a>
+  </div>
+</footer>

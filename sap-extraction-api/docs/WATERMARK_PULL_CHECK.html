@@ -1,0 +1,345 @@
+<title>Watermark Pull Check</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one column; the rule up top, a live checker (inputs left, verdict right), then the run sequence, cases and rules */
+:root {
+  --bg: #f5f8f8;
+  --surface: #ffffff;
+  --surface-2: #ecf2f2;
+  --fg: #13201f;
+  --muted: #56686b;
+  --line: #d3dede;
+  --accent: #0a6b6b;
+  --accent-soft: #dcefed;
+  --ok: #11785a;   --ok-soft: #dcf2e9;
+  --warn: #9a5a00; --warn-soft: #fbefd8;
+  --err: #b0253a;  --err-soft: #fbe4e7;
+  --info: #1f5aa6; --info-soft: #e1ebf8;
+  --gone: #61696e; --gone-soft: #eceeef;
+  --code-bg: #eef3f3;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-head: "IBM Plex Sans Condensed", "Arial Narrow", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c1313; --surface: #121c1c; --surface-2: #192525; --fg: #e2ebea; --muted: #94a6a7; --line: #2a3838;
+    --accent: #52c4ba; --accent-soft: #123230;
+    --ok: #4fd39c; --ok-soft: #10302a; --warn: #f0b04c; --warn-soft: #33260f;
+    --err: #f27a89; --err-soft: #3a171e; --info: #7eb0f2; --info-soft: #13253c;
+    --gone: #a3abaf; --gone-soft: #232a2c; --code-bg: #0f1818;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c1313; --surface: #121c1c; --surface-2: #192525; --fg: #e2ebea; --muted: #94a6a7; --line: #2a3838;
+  --accent: #52c4ba; --accent-soft: #123230;
+  --ok: #4fd39c; --ok-soft: #10302a; --warn: #f0b04c; --warn-soft: #33260f;
+  --err: #f27a89; --err-soft: #3a171e; --info: #7eb0f2; --info-soft: #13253c;
+  --gone: #a3abaf; --gone-soft: #232a2c; --code-bg: #0f1818;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6; }
+.wrap {
+  max-width: 1000px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font-family: var(--font-mono); font-size: .9em; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+h1, h2, h3 { font-family: var(--font-head); line-height: 1.2; margin: 0; text-wrap: balance; }
+p { margin: 0; }
+
+header.top { background: var(--surface); border-bottom: 1px solid var(--line); }
+header.top .wrap { padding-block: 32px 26px; display: grid; gap: 14px; }
+.eyebrow { font: 600 12px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: clamp(28px, 4.6vw, 42px); font-weight: 700; }
+.lede { max-width: 68ch; color: var(--muted); font-size: 16px; }
+.rule {
+  background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px;
+  font: 500 14.5px/1.7 var(--font-mono); overflow-x: auto; white-space: pre;
+}
+.rule .k { color: var(--accent); font-weight: 600; }
+.rule .c { color: var(--muted); font-weight: 400; }
+.tag { display: inline-block; font: 600 11.5px/1 var(--font-mono); padding: 6px 9px; border-radius: 5px; color: var(--warn); background: var(--warn-soft); width: fit-content; }
+
+main.wrap { display: grid; gap: 48px; padding-block: 34px 60px; }
+section { display: grid; gap: 14px; min-width: 0; }
+section > h2 { font-size: 24px; font-weight: 600; }
+section > p, .prose { max-width: 70ch; }
+
+/* Checker */
+.presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.presets button {
+  font: 500 13.5px/1.2 var(--font-body); color: var(--fg); cursor: pointer;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 9px 14px;
+}
+.presets button:hover { border-color: var(--accent); }
+.presets button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.checker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 780px) { .checker { grid-template-columns: minmax(0, 1fr); } }
+form.inputs { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 16px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.field { display: grid; gap: 5px; min-width: 0; }
+.field label { font: 600 12px/1.2 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.field small { font-size: 12.5px; color: var(--muted); }
+.field input[type="datetime-local"], .field input[type="number"] {
+  font: 500 14px/1.2 var(--font-mono); color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; width: 100%; max-width: 100%;
+}
+.field input[type="number"] { width: 96px; }
+.checks { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.checks label { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+.checks input { width: 16px; height: 16px; accent-color: var(--accent); }
+.checks label.off { color: var(--muted); }
+
+.verdict { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); display: grid; align-content: start; min-width: 0; overflow: hidden; }
+.verdict .row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); align-items: baseline; }
+.verdict .row span { font-size: 13.5px; color: var(--muted); }
+.verdict .row b { font: 500 13.5px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.verdict .row b.yes { color: var(--ok); }
+.verdict .row b.no { color: var(--err); }
+.verdict .result { padding: 16px; display: grid; gap: 8px; background: var(--surface-2); }
+.verdict .result small { font: 600 11.5px/1 var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.big { font: 700 20px/1.2 var(--font-head); }
+.big.ok { color: var(--ok); } .big.info { color: var(--info); } .big.warn { color: var(--warn); } .big.gone { color: var(--gone); }
+.verdict .result p { font-size: 14px; }
+.verdict .wm { padding: 11px 16px; font-size: 13.5px; color: var(--muted); border-top: 1px solid var(--line); }
+.verdict .wm b { font-family: var(--font-mono); font-weight: 500; color: var(--fg); }
+
+/* Sequence */
+ol.seq { list-style: none; margin: 0; padding: 0; display: grid; counter-reset: s; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); overflow: hidden; }
+ol.seq li { counter-increment: s; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+ol.seq li:last-child { border-bottom: 0; }
+ol.seq li::before { content: counter(s); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font: 600 13px/1 var(--font-mono); }
+ol.seq b { display: block; font-weight: 600; }
+ol.seq p { font-size: 14px; color: var(--muted); max-width: 70ch; }
+
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: 0; }
+th { font: 600 11.5px/1.3 var(--font-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); white-space: nowrap; }
+td.ts { font-family: var(--font-mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chip { display: inline-block; font: 600 11.5px/1 var(--font-mono); letter-spacing: .03em; padding: 4px 7px; border-radius: 4px; white-space: nowrap; }
+.chip.ok { color: var(--ok); background: var(--ok-soft); }
+.chip.warn { color: var(--warn); background: var(--warn-soft); }
+.chip.err { color: var(--err); background: var(--err-soft); }
+.chip.info { color: var(--info); background: var(--info-soft); }
+.chip.gone { color: var(--gone); background: var(--gone-soft); }
+
+.rules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.rules div { border-top: 3px solid var(--accent); padding-top: 10px; display: grid; gap: 6px; min-width: 0; }
+.rules h3 { font-size: 16px; }
+.rules p { font-size: 14px; color: var(--muted); }
+@media (max-width: 760px) { .rules { grid-template-columns: minmax(0, 1fr); } }
+
+footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+footer .wrap { padding-block: 18px 26px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">SAP → DataTwin · watermark pull</div>
+    <h1>Watermark Pull Check</h1>
+    <p class="lede">After the first full load, each 1-minute run asks SAP only for rows created or modified since the last pull. This page shows the rule SAP applies, lets you test a row against it, and lists what DataTwin does with each answer.</p>
+<div class="rule"><span class="c">-- every run</span>
+from = <span class="k">watermark</span> − 5 min
+SAP sends the row  <span class="k">IF</span>  created_at &gt;= from  <span class="k">OR</span>  modified_at &gt;= from
+<span class="c">-- after a successful pull</span>
+<span class="k">watermark</span> = SAP clock when this pull started</div>
+    <span class="tag">Planned · needs SAP function Z_BSID_DELTA</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <section aria-labelledby="try-h">
+    <h2 id="try-h">Check a row</h2>
+    <p>Choose a case or type your own timestamps. All times are SAP server time.</p>
+    <div class="presets" role="group" aria-label="Example cases">
+      <button type="button" id="p-untouched" data-p="untouched" aria-pressed="true">Row A, not touched</button>
+      <button type="button" id="p-edited" data-p="edited" aria-pressed="false">Row A edited at 10:01:20</button>
+      <button type="button" id="p-new" data-p="new" aria-pressed="false">New row B at 10:01:05</button>
+      <button type="button" id="p-late" data-p="late" aria-pressed="false">Row C, late commit</button>
+      <button type="button" id="p-repeat" data-p="repeat" aria-pressed="false">Row D, already pulled</button>
+    </div>
+    <div class="checker">
+      <form class="inputs" id="f" onsubmit="return false">
+        <div class="field">
+          <label for="wm">Watermark (last pull)</label>
+          <input type="datetime-local" id="wm" step="1" value="2026-11-19T10:00:59">
+          <small>Stored in DataTwin after the previous successful pull</small>
+        </div>
+        <div class="field">
+          <label for="ov">Overlap (minutes)</label>
+          <input type="number" id="ov" min="0" max="60" value="5">
+        </div>
+        <div class="field">
+          <label for="cr">Row created at</label>
+          <input type="datetime-local" id="cr" step="1" value="2026-11-15T10:20:15">
+          <small>BKPF <code>CPUDT</code> + <code>CPUTM</code></small>
+        </div>
+        <div class="field">
+          <label for="md">Row modified at</label>
+          <input type="datetime-local" id="md" step="1" value="2026-11-15T16:45:02">
+          <small>Change log <code>CDHDR</code> <code>UDATE</code> + <code>UTIME</code></small>
+        </div>
+        <div class="checks">
+          <label for="kx"><input type="checkbox" id="kx" checked> Key already in <code>active_bsid</code></label>
+          <label for="sv" id="sv-l"><input type="checkbox" id="sv" checked> Values same as stored</label>
+        </div>
+      </form>
+      <div class="verdict" aria-live="polite">
+        <div class="row"><span>Ask SAP from</span><b id="o-from"></b></div>
+        <div class="row"><span>Created on or after that?</span><b id="o-cr"></b></div>
+        <div class="row"><span>Modified on or after that?</span><b id="o-md"></b></div>
+        <div class="row"><span>SAP sends the row?</span><b id="o-send"></b></div>
+        <div class="result">
+          <small>DataTwin does</small>
+          <div class="big" id="o-big"></div>
+          <p id="o-text"></p>
+        </div>
+        <div class="wm">Next watermark: <b id="o-next"></b></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>One run, step by step</h2>
+    <ol class="seq">
+      <li><div><b>Read the watermark</b><p>From <code>sap_extraction_state</code> for BSID, for example 19-11-2026 10:00:59.</p></div></li>
+      <li><div><b>Subtract the overlap</b><p>5 minutes back gives 19-11-2026 09:55:59. Documents stamped just before the last pull but committed just after it are caught this way.</p></div></li>
+      <li><div><b>Ask SAP</b><p><code>Z_BSID_DELTA</code> returns only rows whose created or modified time is on or after that point, plus SAP's own clock at the start of the query.</p></div></li>
+      <li><div><b>Check each returned row in DataTwin</b><p>The key fingerprint (<code>sap_key_hash</code>) tells new from known. For a known row, the value fingerprint (<code>row_hash</code>) tells changed from unchanged.</p></div></li>
+      <li><div><b>Queue what changed</b><p>New and changed rows become PENDING and go to ingestion. Unchanged repeats are skipped.</p></div></li>
+      <li><div><b>Move the watermark</b><p>Only after everything above succeeded, set the watermark to SAP's clock from step 3. If the run fails, it stays where it was and the next run covers the gap.</p></div></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Cases at the 10:01:59 run</h2>
+    <p>Why the overlap exists: SAP stamps a document's entry time when it is saved, but the row only becomes readable when SAP's update task commits it, which can be a few seconds later. Row C shows the case the overlap rescues; row D shows its harmless side effect.</p>
+    <div class="tbl"><table>
+      <thead><tr><th>Case</th><th>Created</th><th>Modified</th><th>SAP sends?</th><th>DataTwin</th></tr></thead>
+      <tbody>
+        <tr><td>Row A, not touched</td><td class="ts">15-11-2026 10:20:15</td><td class="ts">15-11-2026 16:45:02</td><td><span class="chip err">No</span></td><td>Nothing to do</td></tr>
+        <tr><td>Row A edited</td><td class="ts">15-11-2026 10:20:15</td><td class="ts">19-11-2026 10:01:20</td><td><span class="chip ok">Yes</span></td><td>Key known, values differ: <span class="chip info">CHANGED</span> <span class="chip warn">PENDING</span></td></tr>
+        <tr><td>New row B</td><td class="ts">19-11-2026 10:01:05</td><td class="ts">19-11-2026 10:01:05</td><td><span class="chip ok">Yes</span></td><td>Key unknown: <span class="chip info">NEW</span> + passportid, <span class="chip warn">PENDING</span></td></tr>
+        <tr><td>Row C: stamped 10:00:58 but committed 10:01:03, so the 10:00:59 pull could not see it</td><td class="ts">19-11-2026 10:00:58</td><td class="ts">19-11-2026 10:00:58</td><td><span class="chip ok">Yes</span>, only because of the overlap</td><td>Key unknown: <span class="chip info">NEW</span> + passportid, <span class="chip warn">PENDING</span>. Without the overlap this row would be missed for good.</td></tr>
+        <tr><td>Row D: entered 09:58:10 and already taken by the 10:00:59 pull</td><td class="ts">19-11-2026 09:58:10</td><td class="ts">19-11-2026 09:58:10</td><td><span class="chip ok">Yes</span>, again, inside the overlap</td><td>Key known, values same: <span class="chip gone">Skipped</span>. Nothing written, no duplicate.</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Three rules that keep it safe</h2>
+    <div class="rules">
+      <div><h3>SAP's clock only</h3><p>The watermark always comes from SAP. The DataTwin server can be in another time zone or a few seconds off, and that would make rows slip through.</p></div>
+      <div><h3>Move only on success</h3><p>A failed pull leaves the watermark unchanged. The next pull asks for a longer window and nothing is lost.</p></div>
+      <div><h3>Repeats are harmless</h3><p>The overlap returns some rows twice. Their key and value fingerprints match what is stored, so nothing is written and nothing is ingested again.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the timestamps come from</h2>
+    <div class="tbl"><table>
+      <thead><tr><th>Timestamp</th><th>SAP source</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td>Created</td><td><code>BKPF-CPUDT</code> + <code>BKPF-CPUTM</code></td><td>Entry date and time of the accounting document</td></tr>
+        <tr><td>Modified</td><td><code>CDHDR-UDATE</code> + <code>CDHDR-UTIME</code>, object class <code>BELEG</code></td><td>Change log with date and time. <code>BKPF-AEDAT</code> / <code>UPDDT</code> have the date only.</td></tr>
+        <tr><td>Watermark</td><td>DataTwin <code>sap_extraction_state</code></td><td>SAP clock at the start of the last successful pull</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Related:</span>
+    <a href="https://claude.ai/artifact/SvrBxXHR8RXXmtaviNzuqt" target="_blank" rel="noopener">BSID Watermark Delta Plan</a>
+    <a href="https://claude.ai/artifact/A36sKhUpHrNG9uL3ZKtH4N" target="_blank" rel="noopener">BSID to BT3I Go-Live Plan</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var presets = {
+    untouched: { cr: "2026-11-15T10:20:15", md: "2026-11-15T16:45:02", kx: true, sv: true },
+    edited:    { cr: "2026-11-15T10:20:15", md: "2026-11-19T10:01:20", kx: true, sv: false },
+    "new":     { cr: "2026-11-19T10:01:05", md: "2026-11-19T10:01:05", kx: false, sv: false },
+    late:      { cr: "2026-11-19T10:00:58", md: "2026-11-19T10:00:58", kx: false, sv: false },
+    repeat:    { cr: "2026-11-19T09:58:10", md: "2026-11-19T09:58:10", kx: true, sv: true }
+  };
+  function parse(v) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(v || "");
+    return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) : null;
+  }
+  function pad(n) { return String(n).padStart(2, "0"); }
+  function fmt(d) {
+    return pad(d.getDate()) + "-" + pad(d.getMonth() + 1) + "-" + d.getFullYear() + " " +
+      pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
+  function yn(el, ok) { el.textContent = ok ? "Yes" : "No"; el.className = ok ? "yes" : "no"; }
+
+  function update() {
+    var wm = parse($("wm").value), cr = parse($("cr").value), md = parse($("md").value);
+    var ov = Math.max(0, Math.min(60, parseInt($("ov").value, 10) || 0));
+    var kx = $("kx").checked;
+    $("sv").disabled = !kx;
+    $("sv-l").className = kx ? "" : "off";
+    if (!wm || !cr || !md) {
+      $("o-big").textContent = "Enter all three timestamps";
+      $("o-big").className = "big";
+      return;
+    }
+    var from = new Date(wm.getTime() - ov * 60000);
+    var crOk = cr >= from, mdOk = md >= from, send = crOk || mdOk;
+    $("o-from").textContent = fmt(from);
+    yn($("o-cr"), crOk); yn($("o-md"), mdOk); yn($("o-send"), send);
+    var big, cls, text;
+    if (!send) {
+      big = "Nothing to do"; cls = "gone";
+      text = "Both timestamps are before " + fmt(from) + ", so SAP does not send this row. It is not compared or written.";
+    } else if (!kx) {
+      big = "NEW → PENDING"; cls = "info";
+      text = "SAP sends the row and its key is not in active_bsid. It is inserted with a new passportid and queued for ingestion.";
+    } else if (!$("sv").checked) {
+      big = "CHANGED → PENDING"; cls = "warn";
+      text = "SAP sends the row, its key is known and its values differ. The row is updated, keeps its passportid and is queued again.";
+    } else {
+      big = "Skipped"; cls = "ok";
+      text = "SAP sends the row, but key and values match what is stored. It was already processed, so nothing is written.";
+    }
+    $("o-big").textContent = big;
+    $("o-big").className = "big " + cls;
+    $("o-text").textContent = text;
+    $("o-next").textContent = fmt(new Date(wm.getTime() + 60000)) + " (SAP clock at the next run, if it succeeds)";
+  }
+
+  function apply(name) {
+    var p = presets[name];
+    $("cr").value = p.cr; $("md").value = p.md; $("kx").checked = p.kx; $("sv").checked = p.sv;
+    $("wm").value = "2026-11-19T10:00:59"; $("ov").value = 5;
+    Array.prototype.forEach.call(document.querySelectorAll(".presets button"), function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-p") === name ? "true" : "false");
+    });
+    update();
+  }
+  Array.prototype.forEach.call(document.querySelectorAll(".presets button"), function (b) {
+    b.addEventListener("click", function () { apply(b.getAttribute("data-p")); });
+  });
+  ["wm", "ov", "cr", "md", "kx", "sv"].forEach(function (id) {
+    $(id).addEventListener("input", function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".presets button"), function (b) { b.setAttribute("aria-pressed", "false"); });
+      update();
+    });
+    $(id).addEventListener("change", update);
+  });
+  update();
+})();
+</script>

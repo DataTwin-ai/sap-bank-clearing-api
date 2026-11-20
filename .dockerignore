@@ -13,3 +13,4 @@ Dockerfile
 *.md
 bank_posting/*.html
 bank_posting/sap_abap/
+sap-extraction-api/

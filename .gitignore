@@ -17,8 +17,15 @@
 !/buildspec.yml
 !/deploy/
 !/DEPLOYMENT_PLAN.md
+# SAP extraction service (separate deployment, see sap-extraction-api/docs/DEPLOYMENT.md)
+!/sap-extraction-api/
 
 # never commit
+/sap-extraction-api/config.ini
+/sap-extraction-api/**/*.bak_*
+/sap-extraction-api/data/
+/sap-extraction-api/dist/
+/sap-extraction-api/.venv/
 .env
 __pycache__/
 *.pyc

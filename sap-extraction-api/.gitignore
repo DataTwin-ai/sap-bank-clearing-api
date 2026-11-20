@@ -1,0 +1,13 @@
+# secrets
+config.ini
+.env
+
+# runtime output
+log/
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/

@@ -16,23 +16,35 @@ SAP BSID / BSAD / VBRK / VBRP ──(worker, every 60 s)──► active_bsid / 
 
 | SAP table | Queue table | Target | Theme |
 | --- | --- | --- | --- |
-| BSID | `active_bsid` | `active_bt3h`, `processcode = 'BT3H'`, `transactiontype = 'Invoice'` | `SAP_BSID_INV` |
-| BSAD | `active_bsad` | `active_bt3h`, `processcode = 'BT3H'`, `transactiontype = 'CUSTOMER_ACCOUNT'` | `SAP_BSAD_CA` |
-| VBRK | `active_vbrk` | `active_bt3h`, `processcode = 'BT3H'`, `transactiontype = 'SalesInvoice'` (one row per billing document) | `SAP_VBRK_SI` |
-| VBRP | `active_vbrp` | `active_bt3i`, `processcode = 'BT3I'`, `transactiontype = 'SalesInvoice'` (one row per billing item) | `SAP_VBRP_SI` |
+| BSID | `active_bsid` | `active_bt3h`, `processcode = 'BT3H'`, `transactiontype = 'CUSTOMER_ACCOUNT'` (open items) | `SAP_BSID_INV` |
+| BSAD | `active_bsad` | `active_bt3h`, `processcode = 'BT3H'`, `transactiontype = 'CUSTOMER_ACCOUNT'` (cleared items) | `SAP_BSAD_CA` |
+| VBRK | `active_vbrk` | `active_bt3h`, `processcode = 'BT3H'`, `transactiontype = 'Invoice'` (one row per billing document) | `SAP_VBRK_SI` |
+| VBRP | `active_vbrp` | `active_bt3i`, `processcode = 'BT3I'`, `transactiontype = 'Invoice'` (one row per billing item) | `SAP_VBRP_SI` |
 
-A billing document's header (VBRK) and items (VBRP) have the same `documentnumber` (VBELN) and the same context ID (`grouptransactionref`). The header's `linkref` is the accounting document (BELNR), which is the `documentnumber` of the BSID / BSAD row of the same invoice.
+A billing document's header (VBRK) and items (VBRP) have the same `documentnumber` (VBELN) and the same context ID (`grouptransactionref`). The header's `linkref2` is the accounting document (BELNR), which is the `documentnumber` of the BSID / BSAD row of the same invoice; `linkref` stays free for the UTR.
+
+VBRK is the only invoice source of the AR Inbox dashboard (`active_bt3h` where `transactiontype = 'Invoice'`). An SD invoice is also an open BSID item, so BSID is `CUSTOMER_ACCOUNT`, otherwise the dashboard would list it twice. The VBRK header fills the columns the dashboard reads:
+
+| Dashboard column | `active_bt3h` column | From |
+| --- | --- | --- |
+| Invoice Number, SAP Doc Ref | `documentnumber`, `documentid` | VBELN |
+| Customer Name | `sendername` | KNA1 NAME1 of KUNRG (`customer_name_vbrk = kunrg`, read from `active_kna1`) |
+| Invoice Gross Amount, Net Invoice Amount | `basevalue`, `documentvalue` (and `totaldocumentvalue`) | NETWR + MWSBK (`netwr + mwsbk as gross_value` in `columns_vbrk`) |
+| TDS Rate, TDS Amount, Advance Adjustment | `taxpercentage`, `tdsvalue`, `adjustedamount` | 0 (not in the billing document) |
+| UTR Ref | `linkref` | empty until the bank clearing sets it |
+
 
 ## 1. Before you deploy
 
-All four must be true, or the worker keeps rows PENDING and sends nothing.
+All must be true. Without 1-3 and 5 the worker keeps rows PENDING and sends nothing; without 4 the AR Inbox lists SAP invoices twice.
 
 | # | Prerequisite | How to check |
 | --- | --- | --- |
 | 1 | The ingestion service at `https://lv.datatwin.ai/data-model-ingestion` runs repo `DataTwin-ai/data_modelling-ingestion`, branch `feature/dual-source-api-incremental-export`: commits `4d98030` (caller-routed process / theme) and `40e2acc` (SNO from the theme as the row key, one context ID for a header in `active_bt3h` and its items in `active_bt3i`) | `curl -s https://lv.datatwin.ai/data-model-ingestion/openapi.json` lists `process_code`, `transaction_type`, `theme_name` in `TableIngestRequest` |
 | 2 | Themes `SAP_BSID_INV`, `SAP_BSAD_CA`, `SAP_VBRK_SI`, `SAP_VBRP_SI` exist in the target DB | Run `deploy/sql/bt3h_sap_themes.sql` and `deploy/sql/sales_invoice_themes.sql` (already done on dev `dm00005`) |
 | 3 | `active_bt3h` has the 5 extra columns | Run `deploy/sql/bt3h_columns.sql` (already done on dev `dm00005`) |
-| 4 | The server can reach SAP OData and PostgreSQL (hosts and ports in `config.ini` `[sap]` and `[development]` / `[production]`), and the ingestion service can reach the same PostgreSQL | `install.sh` step 4 runs `cli.py check` |
+| 4 | No `sync-bt3i` cron and no `IT_Invoice` rows for SAP billing documents (the old direct sync wrote them; they would show twice in the AR Inbox) | `crontab -l -u sapapp` has no `sync-bt3i` line. A database that already has them: run `deploy/sql/migrate_ar_inbox_20261121.sql` once (done on dev `dm00005` 2026-11-21: 41 + 40 + 41 rows backed up to `bak_20261121_it_invoice_sap_*` and removed) |
+| 5 | The server can reach SAP OData and PostgreSQL (hosts and ports in `config.ini` `[sap]` and `[development]` / `[production]`), and the ingestion service can reach the same PostgreSQL | `install.sh` step 4 runs `cli.py check` |
 
 The ingestion service reads the staging tables `active_bsid_delta` / `active_bsad_delta` from the DB named in the request (`dm00005`), so it must point at the same PostgreSQL server as `config.ini`.
 
@@ -57,6 +69,7 @@ Target folder on the server: `/opt/sap-extraction-api` (the systemd units expect
 | `deploy/sap-extraction-api.service` | systemd unit for the API |
 | `deploy/run_cron.sh`, `deploy/crontab.example` | Cron wrapper and the optional / fallback cron lines |
 | `deploy/sql/bt3h_sap_themes.sql`, `deploy/sql/sales_invoice_themes.sql`, `deploy/sql/bt3h_columns.sql` | One-time DB objects (section 1) |
+| `deploy/sql/migrate_ar_inbox_20261121.sql` | One-off data migration, only for a DB loaded before 2026-11-21 (section 1, row 4) |
 | `docs/` | This guide and the earlier direct-sync guide |
 
 Not deployed: `config.ini.bak_*`, `sync_bsid_to_bt3i.py.bak_*`, `log/`, `data/`, `start_worker.bat` (Windows only), `__pycache__/`.
@@ -101,6 +114,12 @@ sudo -u sapapp .venv/bin/python cli.py delta-init VBRP
 sudo systemctl restart sap-extraction-worker
 ```
 
+Customer names (`sendername` of VBRK invoices) come from `active_kna1`. Load it once, then keep it current with the hourly KNA1 line in `deploy/crontab.example`:
+
+```bash
+sudo -u sapapp .venv/bin/python cli.py sync --tables KNA1
+```
+
 Use `--all-done` when those rows already exist in `active_bt3h`; leave it out to ingest the current SAP rows once.
 
 ## 6. Verify
@@ -124,6 +143,10 @@ FROM sap_ingestion_run ORDER BY started_at DESC LIMIT 10;
 -- rows that arrived in active_bt3h / active_bt3i
 SELECT themename, transactiontype, count(*), max(modifieddatetime)
 FROM active_bt3h WHERE themename IN ('SAP_BSID_INV', 'SAP_BSAD_CA', 'SAP_VBRK_SI') GROUP BY 1, 2;
+
+-- AR Inbox fields of the VBRK invoices: every count should equal n
+SELECT count(*) n, count(sendername) name, count(basevalue) gross, count(documentvalue) net, count(tdsvalue) tds
+FROM active_bt3h WHERE themename = 'SAP_VBRK_SI' AND transactiontype = 'Invoice';
 SELECT themename, transactiontype, count(*), max(modifieddatetime)
 FROM active_bt3i WHERE themename = 'SAP_VBRP_SI' GROUP BY 1, 2;
 
@@ -177,18 +200,20 @@ Stopping the worker is always safe: rows stay PENDING and are sent when it start
 No code change:
 
 1. `cli.py delta-init <TABLE>` (add `--all-done` to skip the current rows).
-2. `config.ini`: add the table to `[delta] tables` (an item table after its header table), and add `process_code_<table>`, `transaction_type_<table>`, `theme_name_<table>`, `columns_<table>` under `[ingestion]`. `columns_<table>` accepts `column as name` to rename a column.
-3. Create the theme in `theme_mapping` (copy `deploy/sql/sales_invoice_themes.sql`). Map `SNO` to the source line number (or the constant `1` for a header table): it is part of the row key, so a changed SAP row updates its stored row.
+2. `config.ini`: add the table to `[delta] tables` (an item table after its header table), and add `process_code_<table>`, `transaction_type_<table>`, `theme_name_<table>`, `columns_<table>` under `[ingestion]`. `columns_<table>` accepts `column as name` to rename a column and `col1 + col2 as name` to add numeric columns; `customer_name_<table> = <customer number column>` adds the KNA1 name as `customer_name`.
+3. Create the theme in `theme_mapping` (copy `deploy/sql/sales_invoice_themes.sql`). Avoid `EXP()` on columns whose name is part of another column name (the ingestion service replaces them as substrings: `EXP(totalbasevalue+…)` breaks once `basevalue` exists); compute sums with `col1 + col2 as name` instead. Map `SNO` to the source line number (or the constant `1` for a header table): it is part of the row key, so a changed SAP row updates its stored row.
 4. `sudo systemctl restart sap-extraction-worker`.
 
 ## 11. Fallback while the ingestion API is not ready
 
-If prerequisite 1 is not met yet, `active_bt3h` can be fed directly from `active_bsid` (BSID only, theme `IT_Invoice`). Enable the `*/5 … sync-bt3i` line in `deploy/crontab.example` (`sudo -u sapapp crontab -e`); details in `docs/BT3H_SYNC_DEPLOYMENT.md`. Remove that cron line as soon as the worker ingests BSID, otherwise the same invoice appears twice in `active_bt3h`.
+If prerequisite 1 is not met yet, `active_bt3h` can be fed directly from `active_bsid` (BSID only, theme `IT_Invoice`). Enable the `*/5 … sync-bt3i` line in `deploy/crontab.example` (`sudo -u sapapp crontab -e`); details in `docs/BT3H_SYNC_DEPLOYMENT.md`. Remove that cron line as soon as the worker ingests BSID, otherwise the same invoice appears twice in `active_bt3h`, then run `deploy/sql/migrate_ar_inbox_20261121.sql` to remove the rows it wrote.
 
 ## 12. Known limitations
 
 - BSAD context IDs are not yet linked to the context ID the direct sync gave the same invoice (the older rows have no financial year). This goes away once the direct sync is switched off.
-- `documentnumber` holds the SAP document number (BELNR); the invoice reference (XBLNR) is in `documentref`, because XBLNR is often empty or repeated. The AR Inbox query on `active_bt3h` should read `documentref` for the invoice number and `totalbasevalue` / `totaldocumentvalue` for amounts.
+- BSID / BSAD rows: `documentnumber` holds the accounting document number (BELNR); the invoice reference (XBLNR) is in `documentref`, because XBLNR is often empty or repeated.
+- A customer created in SAP after the last KNA1 load has no `sendername` on its invoices; the name is filled when the VBRK row changes again after the next KNA1 load.
+- VBRK amounts are in the document currency (`currency`, `exchangerate` = KURRF). The AR Inbox balance compares them with INR bank amounts, so it is wrong for foreign-currency invoices.
 - The worker polls each whole table (BSID, BSAD, VBRK, VBRP) every minute (the OData service has no delta filter). This is fine at the current size (tens to hundreds of rows); large tables need the planned watermark pull.
-- VBRK billing documents (`SalesInvoice`) and the BSID / BSAD rows of the same invoice have different context IDs. They are linked by header `linkref` (BELNR) = BSID `documentnumber`.
+- VBRK billing documents and the BSID / BSAD rows of the same invoice have different context IDs. They are linked by header `linkref2` (BELNR) = BSID `documentnumber`.
 - The context ID is reused only when the header row was ingested first. If a VBRK run fails while the VBRP run of the same cycle succeeds, those items get their own context ID.

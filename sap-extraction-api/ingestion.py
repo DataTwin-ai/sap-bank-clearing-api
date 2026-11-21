@@ -17,6 +17,7 @@ and a unique index on sap_ingestion_run (status = 'RUNNING') in the database.
 """
 
 import json
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -56,26 +57,52 @@ def ingestion_settings() -> Dict[str, Any]:
     }
 
 
-def staging_columns(sap_table: str) -> List[Tuple[str, str]]:
+_IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def staging_columns(sap_table: str) -> List[Tuple[Tuple[str, ...], str]]:
     """
-    SAP columns copied to the staging table as (column, staging name) pairs
-    ([ingestion] columns_bsid = bukrs, kunnr, ...). "bukrs_ana as bukrs" renames a column, e.g. so
-    VBRP items carry the same bukrs as their VBRK header. The ingestion service adds every unmapped
-    source column to the target table, so send only the columns the target process needs.
-    Empty = all columns.
+    SAP columns copied to the staging table as ((source columns), staging name) pairs
+    ([ingestion] columns_bsid = bukrs, kunnr, ...).
+      "bukrs_ana as bukrs"           renames a column, e.g. so VBRP items carry their VBRK header's bukrs
+      "netwr + mwsbk as gross_value" adds numeric columns (empty = 0), e.g. gross = net + tax
+    The ingestion service adds every unmapped source column to the target table, so send only the
+    columns the target process needs. Empty = all columns.
     """
     t = sap_table.lower()
     raw = settings.get("ingestion", f"columns_{t}", f"INGESTION_COLUMNS_{t.upper()}", "")
     out = []
     for item in raw.replace(";", ",").split(","):
-        parts = item.strip().lower().split()
-        if len(parts) == 3 and parts[1] == "as":
-            out.append((parts[0], parts[2]))
-        elif len(parts) == 1:
-            out.append((parts[0], parts[0]))
-        elif parts:
-            raise ValueError(f"[ingestion] columns_{t}: cannot read '{item.strip()}' (use 'column' or 'column as name')")
+        item = " ".join(item.lower().split())
+        if not item:
+            continue
+        expr, sep, alias = item.rpartition(" as ")
+        if not sep:
+            expr, alias = item, item
+        src = tuple(c.strip() for c in expr.split("+"))
+        if not all(_IDENT.fullmatch(c) for c in src + (alias,)):
+            raise ValueError(f"[ingestion] columns_{t}: cannot read '{item}' "
+                             f"(use 'column', 'column as name' or 'col1 + col2 as name')")
+        out.append((src, alias))
     return out
+
+
+def _staging_expr(src: Tuple[str, ...], alias: str) -> str:
+    if len(src) == 1:
+        return f"t.{q(src[0])}" if src[0] == alias else f"t.{q(src[0])} AS {q(alias)}"
+    total = " + ".join(f"COALESCE(NULLIF(TRIM(t.{q(c)}::text), '')::numeric, 0)" for c in src)
+    return f"({total}) AS {q(alias)}"
+
+
+def customer_name_column(sap_table: str) -> str:
+    """
+    Customer number column of a delta table whose name from the customer master (active_kna1.name1,
+    loaded by `cli.py extract KNA1`) is added to the staging table as customer_name
+    ([ingestion] customer_name_vbrk = kunrg). SAP documents carry only the customer number; the
+    theme maps customer_name to SenderName. Empty = no name column.
+    """
+    t = sap_table.lower()
+    return settings.get("ingestion", f"customer_name_{t}", f"INGESTION_CUSTOMER_NAME_{t.upper()}", "").strip().lower()
 
 
 def target_for(sap_table: str) -> Dict[str, str]:
@@ -302,18 +329,32 @@ def _run_one(conn, client: IngestionClient, sap_table: str, env: Optional[str], 
     cols = data_columns(cur, target)
     wanted = staging_columns(sap_table)
     if wanted:
-        missing = [c for c, _ in wanted if c not in cols]
+        missing = sorted({c for src, _ in wanted for c in src if c not in cols})
         if missing:
             logger.warning(f"[INGEST] {sap_table}: configured columns not in {target}: {missing}")
-        select = [(c, alias) for c, alias in wanted if c in cols]
+        select = [(src, alias) for src, alias in wanted if all(c in cols for c in src)]
     else:
-        select = [(c, c) for c in cols]
-    select_sql = ", ".join(q(c) if c == alias else f"{q(c)} AS {q(alias)}" for c, alias in select)
+        select = [((c,), c) for c in cols]
+    parts = ["t.passportid"] + [_staging_expr(src, alias) for src, alias in select]
+
+    name_join, name_col = "", customer_name_column(sap_table)
+    if name_col:
+        if name_col in cols and _has_column(cur, "active_kna1", "kunnr") and _has_column(cur, "active_kna1", "name1"):
+            name_join = (f"LEFT JOIN (SELECT DISTINCT ON (kunnr) kunnr, NULLIF(TRIM(name1::text), '') AS name1 "
+                         f"FROM public.active_kna1 WHERE kunnr IS NOT NULL ORDER BY kunnr) k "
+                         f"ON k.kunnr::text = t.{q(name_col)}::text")
+            parts.append("k.name1 AS customer_name")
+        else:
+            logger.warning(f"[INGEST] {sap_table}: customer_name sent empty ({name_col} not in {target} "
+                           f"or active_kna1 missing - run: python cli.py extract KNA1)")
+            parts.append("NULL::text AS customer_name")
+
+    select_sql = ", ".join(parts)
     cur.execute(f"DROP TABLE IF EXISTS public.{q(staging)}")
     cur.execute(f"""CREATE TABLE public.{q(staging)} AS
-                    SELECT passportid, {select_sql} FROM public.{q(target)}
-                    WHERE ingestion_run_id = %s AND ingestion_status = 'IN_PROGRESS'
-                    ORDER BY first_seen_at, passportid""", (run_id,))
+                    SELECT {select_sql} FROM public.{q(target)} t {name_join}
+                    WHERE t.ingestion_run_id = %s AND t.ingestion_status = 'IN_PROGRESS'
+                    ORDER BY t.first_seen_at, t.passportid""", (run_id,))
     cur.execute(f"UPDATE public.{RUN_TABLE} SET record_count = %s WHERE run_id = %s", (len(passports), run_id))
     cur.execute(f"SELECT started_at FROM public.{RUN_TABLE} WHERE run_id = %s", (run_id,))
     started = cur.fetchone()[0]

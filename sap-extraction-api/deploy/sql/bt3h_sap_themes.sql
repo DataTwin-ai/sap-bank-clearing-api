@@ -1,5 +1,7 @@
 -- Pinned ingestion themes for SAP delta tables -> active_bt3h (process BT3H, product DTFOWS).
 -- Referenced by config.ini: theme_name_bsid = SAP_BSID_INV, theme_name_bsad = SAP_BSAD_CA.
+-- Both are sent with transaction type CUSTOMER_ACCOUNT (open / cleared items). Invoices for the AR
+-- Inbox (transactiontype Invoice) come from VBRK: deploy/sql/sales_invoice_themes.sql.
 -- Re-runnable: replaces the two themes. Already applied on the dev DB dm00005 (2026-11-20).
 -- The ingestion service adds rows for unmapped extra columns (bukrs, cpudt, hkont, shkzg, ...)
 -- itself on the first run (created_by AUTO_SCHEMA); they are not listed here.

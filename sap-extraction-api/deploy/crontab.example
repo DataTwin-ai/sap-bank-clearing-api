@@ -6,8 +6,13 @@
 # BSID / BSAD do NOT need cron: the systemd worker (deploy/sap-extraction-worker.service)
 # polls SAP every 60 s and sends new / changed rows to the ingestion API (queue).
 
-# Optional - full loads of the non-delta [sap] tables (e.g. KNA1, T001) once a day at 06:00 IST.
-# Not needed while [sap] tables only lists delta tables.
+# Customer master KNA1 -> active_kna1, every hour. The worker reads the customer name of each VBRK
+# invoice from it (customer_name_vbrk = kunrg -> sendername). A customer created in SAP has no name
+# on its invoices until this ran. Does not touch active_bt3h (bt3h sync runs only after a BSID extract).
+5 * * * * /opt/sap-extraction-api/deploy/run_cron.sh sync --tables KNA1 >> /opt/sap-extraction-api/log/cron.out 2>&1
+
+# Optional - full loads of the other non-delta [sap] tables (e.g. T001) once a day at 06:00 IST.
+# Not needed while [sap] tables only lists delta tables and KNA1.
 # 30 0 * * * /opt/sap-extraction-api/deploy/run_cron.sh sync >> /opt/sap-extraction-api/log/cron.out 2>&1
 
 # Fallback only - without the systemd worker: one delta poll + ingestion cycle every minute.
@@ -15,5 +20,6 @@
 # * * * * * /opt/sap-extraction-api/deploy/run_cron.sh delta >> /opt/sap-extraction-api/log/cron.out 2>&1
 
 # Fallback only - direct copy active_bsid -> active_bt3h while the ingestion API is not available.
-# Remove it once the worker ingests BSID, otherwise invoices appear twice in active_bt3h.
+# Remove it once the worker ingests BSID, otherwise invoices appear twice in active_bt3h (AR Inbox);
+# then run deploy/sql/migrate_ar_inbox_20261121.sql to remove the IT_Invoice rows it wrote.
 # */5 * * * * /opt/sap-extraction-api/deploy/run_cron.sh sync-bt3i >> /opt/sap-extraction-api/log/cron.out 2>&1

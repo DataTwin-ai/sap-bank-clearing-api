@@ -361,7 +361,20 @@ _INVOICE_POST_EXAMPLE = {
 
 class InvoicePostRequest(BaseModel):
     org_id: str = Field(description="Organisation (active_bt3i.orgid)")
-    items: List[InvoicePostItem] = Field(description="Invoices to post")
+    items: Optional[List[InvoicePostItem]] = Field(
+        default=None, description="Invoices to post (or send an Excel file_path instead)"
+    )
+    file_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "FB70 Excel instead of items: S3 key in the tenant bucket (with tenant_id), "
+            "s3://bucket/key, an S3 https URL, or a path on the server"
+        ),
+    )
+    sheet: Optional[str] = Field(default=None, description="Excel sheet (default: first sheet)")
+    tenant_id: Optional[str] = Field(
+        default=None, description="Tenant: file_path is read from s3://dt-<tenant_id>-<env>/<file_path>"
+    )
     company_code: Optional[str] = Field(default=None, description="Default SAP company code for all items")
     customer: Optional[str] = Field(default=None, description="Default SAP customer number")
     gl_account: Optional[str] = Field(default=None, description="Default revenue G/L account")
@@ -693,7 +706,7 @@ async def invoice_post(payload: InvoicePostRequest):
         return await run_in_threadpool(
             process_invoice_post, data, dry_run=bool(payload.dry_run), update_db=bool(payload.update_db)
         )
-    except ValueError as e:
+    except (ValueError, FileNotFoundError) as e:
         logger.warning(f"[INVOICE POST] 400 Bad Request: {e}")
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,

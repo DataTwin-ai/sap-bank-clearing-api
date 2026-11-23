@@ -113,6 +113,47 @@ assignment `ZUONR` (if ≤ 18), header text `BKTXT` (always, ≤ 25).
 | `ERROR` | SAP refused the posting, SAP message in `message` | no | no |
 | `NOT_POSTED` | SAP function not reachable | no | no |
 
+### From an Excel file in S3 instead of `items`
+
+Upload the FB70 Excel to the tenant bucket and send its key:
+
+```json
+POST /api/invoice/post
+{
+  "org_id": "OM0000000001",
+  "tenant_id": "DM00005",
+  "file_path": "AR Inbox Post ERP/OM0000000001/invoice_fb70_sample.xlsx",
+  "sheet": "FB70_Upload",
+  "company_code": "DAT1",
+  "gl_account": "40400000",
+  "dry_run": true
+}
+```
+
+| `file_path` form | File read from |
+|---|---|
+| key + `tenant_id` | `s3://dt-<tenant_id lower-case><env suffix>/<file_path>`, e.g. `s3://dt-dm00005-dev/AR Inbox Post ERP/OM0000000001/invoice.xlsx` (dev suffix `-dev`) |
+| `s3://bucket/key` or `https://bucket.s3.amazonaws.com/key` | that object |
+| other text | a file on the API server (or the same file name in its `data/` folder) |
+
+The file is downloaded to the server's `data/s3/` folder and read; each row becomes one item.
+
+| Column | Item field | Required |
+|---|---|---|
+| ZUONR | `invoice_ref` | yes |
+| ACCNT | `customer` (SAP number) | yes |
+| WRBTR | `amount` (gross) | yes |
+| WAERS | `currency` | yes |
+| BLDAT / BUDAT | `doc_date` / `posting_date` | yes |
+| HKONT | `gl_account` (empty cell → request value) | yes (column) |
+| BUSCS | must be `Invoice` | yes (column) |
+| BUKRS, MWSKZ | `company_code`, `tax_code` (empty → request value) | no |
+| SGTXT | `item_text` | no |
+| WRBTR1 | only compared with WRBTR (warning if different and no tax code) | no |
+
+A bank-layout file (NEWKO_2 / WRBTR_2) is rejected with 400. A key that does not exist returns 400 `S3 file not found: s3://…`.
+Sample: [samples/invoice_fb70_sample.xlsx](samples/invoice_fb70_sample.xlsx), [samples/invoice_post_s3.json](samples/invoice_post_s3.json).
+
 ### Invoice already posted in SAP by someone else
 
 `POST /api/bank/post` with `"file_type": "invoice"` only **finds** the invoice in SAP and stores its number;
@@ -269,7 +310,48 @@ Every row of the connection (bank and invoices) gets the same number. A value th
 
 ---
 
-## 3. Before the first real run
+## 3. Bank receipts
+
+| Case | Call |
+|---|---|
+| The receipt is matched to invoices in a connection (`active_cnx`) | `POST /api/clearing/post` (section 2), one call per connection |
+| A bank Excel (F-30 layout) or a JSON list, **one receipt clears one invoice** per row | `POST /api/bank/post` |
+
+`/api/bank/post` with a file in S3:
+
+```json
+{
+  "file_type": "bank",
+  "tenant_id": "DM00005",
+  "org_id": "OM0000000002",
+  "file_path": "AR Inbox Post ERP/OM0000000002/bank_CTXBS0126270000028_1795429634553.xlsx",
+  "sheet": "FB70_Upload",
+  "dry_run": true,
+  "update_db": true
+}
+```
+
+The same S3 rules apply as for invoices. Excel columns per row (F-30 layout): BLDAT, BLART, BUKRS, BUDAT, MONAT, WAERS,
+NEWBS_1 / NEWKO_1 (customer) / WRBTR_1, ZUONR_1 (invoice reference), NEWBS_2 (40) / NEWKO_2 (bank G/L) / WRBTR_2 (amount),
+ZUONR_2 (UTR), SGTXT_1 / SGTXT_2. The same with JSON `items`:
+
+```json
+{
+  "org_id": "OM0000000001",
+  "match_by": "BELNR",
+  "dry_run": true,
+  "items": [
+    { "doc_date": "2026-11-23", "posting_date": "2026-11-23", "company_code": "DAT1", "currency": "INR",
+      "customer": "30000001", "bank_gl": "24500000", "amount": 10000.00,
+      "invoice_ref": "1800000000", "utr": "UTR0001", "item_text": "Bank receipt" }
+  ]
+}
+```
+
+Result per row: SAP posting = clearing document in `results[].document_no`, written to `active_bt3i.documentid`
+(invoice) and `active_bs.documentid` (bank row whose `transactionref` = UTR).
+
+## 4. Before the first real run
 
 | # | Who | What | Status |
 |---|---|---|---|
@@ -279,7 +361,7 @@ Every row of the connection (bank and invoices) gets the same number. A value th
 | 4 | Finance | SAP customer number, company code, revenue G/L and tax code per invoice / org | **open**: AR Inbox must send them |
 | 5 | DevOps | Deploy this API version to the live server | **open** |
 
-## 4. Undo
+## 5. Undo
 
 | What | SAP | DB |
 |---|---|---|

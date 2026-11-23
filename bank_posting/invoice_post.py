@@ -23,13 +23,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
 
-from bank_posting.invoice import SAPInvoiceIndex
+from bank_posting.invoice import SAPInvoiceIndex, invoice_items_from_rows
 from bank_posting.posting import (
     SAPBankPostingClient,
     _blank,
     _text,
     alpha,
+    detect_file_type,
+    header_of,
     load_bank_config,
+    load_sheet_rows,
     logger,
     parse_amount,
     parse_date,
@@ -37,6 +40,30 @@ from bank_posting.posting import (
 from db_manager import get_db_credentials
 
 REF_MAX = 25  # BKPF-BKTXT
+
+# FB70 Excel (sheet FB70_Upload): columns of bank_posting.invoice.INVOICE_COLUMNS plus these optional ones
+EXTRA_FILE_COLUMNS = {"BUKRS": "company_code", "MWSKZ": "tax_code"}
+
+
+def items_from_sheet(rows: List[tuple]) -> List[Dict[str, Any]]:
+    """
+    FB70 layout -> invoice_post items:
+      ZUONR invoice_ref, ACCNT customer, WRBTR amount (gross), WAERS currency, HKONT revenue G/L,
+      BLDAT / BUDAT dates, SGTXT text, BUSCS 'Invoice'; optional BUKRS company code, MWSKZ tax code,
+      WRBTR1 G/L amount (only compared with WRBTR).
+    Company code / tax code / G/L missing in the file come from the request.
+    """
+    detected = detect_file_type(rows)
+    if detected and detected != "invoice":
+        raise ValueError(f"The Excel columns look like a {detected} file, not an invoice (FB70) file")
+    items = invoice_items_from_rows(rows)
+    header = header_of(rows)
+    extra_idx = {f: header.index(h) for h, f in EXTRA_FILE_COLUMNS.items() if h in header}
+    for it in items:
+        values = rows[it["row"] - 1]
+        for f, i in extra_idx.items():
+            it[f] = values[i] if i < len(values) else None
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -66,12 +93,16 @@ def normalise_invoice_post(raw: Dict[str, Any], defaults: Dict[str, Any], cfg: D
         "period": _text(pick("period")),
         "doc_type": _text(pick("doc_type")).upper() or cfg["invoice_doc_type"],
         "item_text": _text(raw.get("item_text"))[:50],
+        "transaction_type": _text(raw.get("transaction_type")),
+        "gl_amount": parse_amount(raw.get("gl_amount")),
     }
 
 
 def validate_invoice_post(item: Dict[str, Any]) -> List[str]:
     errs: List[str] = []
     ref = item["invoice_ref"]
+    if item["transaction_type"] and item["transaction_type"].lower() != "invoice":
+        errs.append(f"BUSCS must be 'Invoice', got '{item['transaction_type']}'")
     if not ref:
         errs.append("invoice_ref is missing")
     elif len(ref) > REF_MAX:
@@ -173,16 +204,28 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
     org_id = _text(payload.get("org_id"))
     if not org_id:
         raise ValueError("org_id is required")
-    raw_items = [i for i in (payload.get("items") or []) if isinstance(i, dict)]
-    if not raw_items:
-        raise ValueError("items is empty")
     defaults = {k: payload.get(k) for k in ("company_code", "customer", "gl_account", "tax_code", "currency",
                                             "doc_date", "posting_date", "baseline_date", "period", "doc_type")}
 
     started = datetime.now()
     batch_id = f"INP{started:%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
     log = f"[INVOICE POST] {batch_id}"
-    logger.info(f"{log}: start, org {org_id}, {len(raw_items)} item(s), dry_run={dry_run}, update_db={update_db}")
+
+    file_path = _text(payload.get("file_path"))
+    if file_path:
+        # FB70 Excel: S3 key in the tenant bucket (tenant_id), s3:// / https S3 URL, or a server path
+        tenant_id = _text(payload.get("tenant_id")) or None
+        logger.info(f"{log}: reading '{file_path}' (tenant {tenant_id or '-'}, sheet {payload.get('sheet') or 'first'})")
+        rows = load_sheet_rows(file_path, payload.get("sheet") or None, tenant_id=tenant_id, org_id=org_id)
+        raw_items = items_from_sheet(rows)
+        source = file_path
+    else:
+        raw_items = [i for i in (payload.get("items") or []) if isinstance(i, dict)]
+        source = "json"
+    if not raw_items:
+        raise ValueError("No invoices: send 'items' or an Excel 'file_path' with at least one row")
+    logger.info(f"{log}: start, org {org_id}, {len(raw_items)} item(s) from {source}, "
+                f"dry_run={dry_run}, update_db={update_db}")
 
     items = [normalise_invoice_post({**r, "row": r.get("row", n)}, defaults, cfg)
              for n, r in enumerate(raw_items, start=1)]
@@ -220,6 +263,10 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
         if len(item["invoice_ref"]) > 16:
             warns.append("invoice_ref is longer than 16 characters: not stored in the SAP reference (XBLNR), "
                          "SAP's duplicate check by reference is skipped")
+        if (item["gl_amount"] is not None and item["amount"] is not None
+                and item["gl_amount"] != item["amount"] and not item["tax_code"]):
+            warns.append(f"G/L amount (WRBTR1) {item['gl_amount']} differs from invoice amount {item['amount']} "
+                         f"but no tax code is given: SAP posts the full amount to the G/L")
 
         res: Dict[str, Any] = {
             "row": item["row"],
@@ -330,6 +377,7 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
         "batch_id": batch_id,
         "dry_run": dry_run,
         "org_id": org_id,
+        "source": source,
         "sap_posting": sap_status,
         "total": len(results),
         "summary": counts,

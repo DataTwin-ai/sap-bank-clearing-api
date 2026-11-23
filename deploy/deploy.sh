@@ -6,7 +6,7 @@
 #
 # 1. Downloads the source bundle from S3 and extracts it
 # 2. Builds the Docker image locally (sap-bank-clearing-api:<release>)
-# 3. Installs config.ini (from the bundle, else SSM Parameter Store)
+# 3. Installs config.ini (SSM Parameter Store, else the file already on the host)
 # 4. Replaces the running container
 # 5. Health-checks /health; rolls back to the previous image on failure
 #
@@ -52,8 +52,8 @@ tar -xzf "$RELEASE_DIR/bundle.tar.gz" -C "$RELEASE_DIR"
 rm -f "$RELEASE_DIR/bundle.tar.gz"
 
 # --- config.ini --------------------------------------------------------------
-# Priority: config.ini shipped in the bundle (from git) > SSM parameter >
-# existing $APP_DIR/config.ini on the host.
+# Priority: config.ini in the bundle (hand-made bundles only; CodeBuild does not
+# ship it, config.ini is not in git) > SSM parameter > existing $APP_DIR/config.ini.
 if [ -s "$RELEASE_DIR/config.ini" ]; then
   cp "$RELEASE_DIR/config.ini" "$APP_DIR/config.ini"
   log "config.ini taken from release bundle"

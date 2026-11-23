@@ -4,7 +4,6 @@
 !/README.md
 !/requirements.txt
 !/config.example.ini
-!/config.ini
 !/logger_setup.py
 !/db_manager.py
 !/sap_odata_extractor.py
@@ -20,7 +19,9 @@
 # SAP extraction service (separate deployment, see sap-extraction-api/docs/DEPLOYMENT.md)
 !/sap-extraction-api/
 
-# never commit
+# never commit (passwords, API keys): config.ini lives in SSM /sap-bank-clearing-api/config.ini
+/config.ini
+/config.ini.bak_*
 /sap-extraction-api/config.ini
 /sap-extraction-api/**/*.bak_*
 /sap-extraction-api/data/

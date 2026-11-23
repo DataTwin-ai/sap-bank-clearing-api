@@ -187,15 +187,27 @@ On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clear
      --document-name AWS-RunShellScript \
      --parameters 'commands=["dnf install -y docker","systemctl enable --now docker"]'
    ```
-3. **config.ini** — either place it on the host at `/opt/sap-bank-clearing-api/config.ini`,
-   or store it in Parameter Store and grant the instance role read access:
+3. **config.ini** — not in git and not in the release bundle (it holds the SAP / DB
+   passwords and the API keys). Store it in Parameter Store and grant the instance role
+   read access; every deploy copies it to `/opt/sap-bank-clearing-api/config.ini`:
    ```bash
    aws ssm put-parameter --region us-east-1 --name /sap-bank-clearing-api/config.ini \
      --type SecureString --value file://config.ini --overwrite
    aws iam put-role-policy --role-name DataTwinEC2Role \
      --policy-name sap-bank-clearing-api-config --policy-document file://deploy/iam/ec2-policy.json
    ```
-   (The instance role already has S3 read via `AmazonS3FullAccess`.)
+   Without the parameter (or without read access) the deploy keeps the `config.ini`
+   already on the host. (The instance role already has S3 read via `AmazonS3FullAccess`.)
+
+### Changing config.ini or rotating the API key
+
+1. Edit your local `config.ini`. For a new key, add it next to the old one:
+   `[auth] api_keys = <old-key>,<new-key>` (both are accepted).
+2. Upload it: the `aws ssm put-parameter ... --overwrite` command above.
+3. Apply it without a release: on the host
+   `sudo aws ssm get-parameter --region us-east-1 --name /sap-bank-clearing-api/config.ini --with-decryption --query Parameter.Value --output text | sudo tee /opt/sap-bank-clearing-api/config.ini >/dev/null && sudo docker restart sap-bank-clearing-api`
+   (or start the CodeBuild project again). The keys are read once per container start.
+4. Move every client to the new key, then remove the old key and repeat steps 2-3.
 4. **nginx** — install [deploy/nginx/sap-bank.conf](deploy/nginx/sap-bank.conf) as
    `/etc/nginx/snippets/sap-bank.conf`, add `include /etc/nginx/snippets/sap-bank.conf;`
    inside the `demo.datatwin.ai` 443 server block, then `sudo nginx -t && sudo systemctl reload nginx`.

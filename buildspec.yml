@@ -38,9 +38,10 @@ phases:
 
   build:
     commands:
+      # config.ini is not in git: the host reads it from SSM ($CONFIG_PARAM), see deploy/deploy.sh
       - |
         tar -czf "/tmp/${RELEASE}.tar.gz" \
-          Dockerfile .dockerignore requirements.txt config.ini \
+          Dockerfile .dockerignore requirements.txt \
           main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py \
           bank_posting deploy/deploy.sh
       - ls -lh "/tmp/${RELEASE}.tar.gz"

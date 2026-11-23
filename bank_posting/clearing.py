@@ -160,6 +160,8 @@ def normalise_clearing(p: Dict[str, Any], cfg: Dict[str, Any], org: Optional[Dic
         "doc_date": parse_date(doc_raw),
         "value_date": parse_date(value_raw),
         "doc_type": _text(pick("doc_type")).upper() or cfg["default_doc_type"],
+        "house_bank": _text(pick("house_bank")).upper(),
+        "house_bank_account": _text(pick("house_bank_account")).upper(),
         "period": _text(p.get("period")),
         "amount_raw": p.get("amount"),
         "amount": parse_amount(p.get("amount")),
@@ -357,6 +359,8 @@ class SAPClearingClient(SAPBankPostingClient):
             "IV_UTR": utr if utr and len(utr) <= 16 else None,
             "IV_ZUONR": utr or None,
             "IV_SGTXT": item["item_text"] or f"{item['connection_id']} {utr}".strip()[:50],
+            "IV_HBKID": item["house_bank"] or None,
+            "IV_HKTID": item["house_bank_account"] or None,
         }
         try:
             resp = self._call(self.fm, params)
@@ -387,7 +391,8 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
         raise ValueError(f"match_by must be one of {MATCH_FIELDS}")
 
     org = org_settings(_text(payload.get("org_id")))
-    from_config = sorted(k for k in ("company_code", "customer", "bank_gl", "currency", "doc_type")
+    from_config = sorted(k for k in ("company_code", "customer", "bank_gl", "currency", "doc_type",
+                                     "house_bank", "house_bank_account")
                          if _blank(payload.get(k)) and org.get(k))
     if _blank(payload.get("value_date")) and is_true(org.get("value_date_required")):
         from_config.append("value_date (= posting_date)")

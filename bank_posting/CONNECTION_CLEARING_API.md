@@ -373,6 +373,14 @@ ZUONR_2 (UTR), SGTXT_1 / SGTXT_2. The same with JSON `items`:
 Result per row: SAP posting = clearing document in `results[].document_no`, written to `active_bt3i.documentid`
 (invoice) and `active_bs.documentid` (bank row whose `transactionref` = UTR).
 
+More rules for bank rows:
+- Empty company code, currency, bank G/L, house bank and house bank account are taken from `[org:<org_id>]`;
+  `value_date_required = true` sends value date = posting date. The response lists them in `from_config`.
+- `house_bank` / `house_bank_account` (SAP HBKID / HKTID): needed when the bank G/L's field status requires them,
+  e.g. DPDL receipt G/L 10601012 → `SBIDL` / `SBIM`.
+- A 17–18 character UTR (e.g. `PHDFCH01086920604`) is accepted: it is not sent as SAP reference (XBLNR, 16 characters),
+  so SAP's duplicate check by UTR is skipped (warning in the row), but `active_bs` is still linked by it.
+
 ## 4. Before the first real run
 
 | # | Who | What | Status |

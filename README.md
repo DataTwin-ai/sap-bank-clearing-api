@@ -24,7 +24,7 @@ Excel / JSON items ──► POST /api/bank/post
 | `bank_posting/sap_abap/` | ABAP source of `Z_BANK_POST_CLEAR` (install in SAP) |
 | `db_manager.py` | PostgreSQL engine/credentials from `config.ini` or `DB_*` env vars |
 | `sap_odata_extractor.py` | SAP OData client (reads `[sap]` from `config.ini` or `SAP_*` env vars) |
-| `logger_setup.py` | Console + timestamped file logging into `log/` |
+| `logger_setup.py` | Console + one log file per day: `log/log_YYYYMMDD.txt` (kept `log_retention_days`, default 30) |
 | `config.example.ini` | Template for `config.ini` (never commit the real one) |
 | `Dockerfile`, `.dockerignore` | Container image |
 | `buildspec.yml` | AWS CodeBuild: package source → S3 → deploy to EC2 via SSM |
@@ -219,4 +219,4 @@ On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clear
 - Build without deploying: set `DEPLOY_ENABLED=false` on the build.
 - Roll back: re-run an older build, or on the host
   `docker rm -f sap-bank-clearing-api` and re-run with an older `sap-bank-clearing-api:<release>` image.
-- Logs: `sudo docker logs -f sap-bank-clearing-api` or `/opt/sap-bank-clearing-api/log/`.
+- Logs: `/opt/sap-bank-clearing-api/log/log_YYYYMMDD.txt` (UTC date, one file per day) or `sudo docker logs -f sap-bank-clearing-api`. Find a request by its `batch_id`; commands in `bank_posting/samples/README.md`.

@@ -357,6 +357,6 @@ Other notes on this run:
 | 1 | Matching does not check the customer, which caused the wrong posting in section 5.3 | Before posting, compare the SAP customer name (KNA1) with `sendername` and reject on mismatch |
 | 2 | SAP-sourced invoices already have `documentid`, so they are never updated | Add `clearingdocid` / `clearingdate` columns to `active_bt3i` and write the clearing document there |
 | 3 | `active_bt3i` has no company code | Look it up from `active_bsid` by `belnr`, or store `bukrs` during the sync |
-| 4 | One bank receipt that covers several invoices | Clear several open items in one posting (several `FTCLEAR` rows) |
+| 4 | One bank receipt that covers several invoices | Done for connections: `POST /api/clearing/post` + `Z_BANK_POST_CLEAR_MULTI`, see [CONNECTION_CLEARING_API.md](CONNECTION_CLEARING_API.md) |
 | 5 | Partial payment, bank charges, TDS | Residual items / difference posting in the FM |
 | 6 | SAP objects in `$TMP` | Move them to a Z package with a transport |

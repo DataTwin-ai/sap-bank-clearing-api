@@ -1,0 +1,16 @@
+{
+  "org_id": "OM0000000001",
+  "company_code": "DAT1",
+  "customer": "30000001",
+  "gl_account": "40400000",
+  "tax_code": "",
+  "currency": "INR",
+  "doc_date": "2026-11-23",
+  "posting_date": "2026-11-23",
+  "dry_run": true,
+  "update_db": true,
+  "items": [
+    { "invoice_ref": "SAMPLE-INV-001", "amount": 100.00, "item_text": "Sample invoice 001" },
+    { "invoice_ref": "SAMPLE-INV-002", "amount": 50.00, "item_text": "Sample invoice 002" }
+  ]
+}

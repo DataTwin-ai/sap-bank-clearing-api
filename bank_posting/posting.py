@@ -76,6 +76,14 @@ def load_bank_config() -> Dict[str, str]:
     sec = cfg["bank_posting"] if cfg.has_section("bank_posting") else {}
     return {
         "rfc_function": sec.get("rfc_function", "Z_BANK_POST_CLEAR"),
+        # connection clearing (POST /api/clearing/post): one bank receipt, several invoices
+        "clearing_rfc_function": sec.get("clearing_rfc_function", "Z_BANK_POST_CLEAR_MULTI"),
+        "cnx_clearing_column": sec.get("cnx_clearing_column", "clearingdocid").strip().lower(),
+        # BELNR = SAP document number from active_bt3i.documentid (set by /api/invoice/post)
+        "clearing_match_by": sec.get("clearing_match_by", "BELNR").strip().upper(),
+        # new customer invoices (POST /api/invoice/post)
+        "invoice_rfc_function": sec.get("invoice_rfc_function", "Z_INVOICE_POST"),
+        "invoice_doc_type": sec.get("invoice_doc_type", "DR").strip().upper(),
         "default_doc_type": sec.get("default_doc_type", "DZ"),
         "default_match_by": sec.get("default_match_by", "XBLNR").upper(),
         "check_open_items": sec.get("check_open_items", "true").lower()
@@ -86,6 +94,48 @@ def load_bank_config() -> Dict[str, str]:
         ),
         "s3_key_template": sec.get("s3_key_template", "{dir}/{org_id}/{name}"),
     }
+
+
+def _plain_config() -> configparser.ConfigParser:
+    """config.ini without interpolation (customer names may contain %); keys: lower case, single spaces."""
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.optionxform = lambda s: " ".join(str(s).split()).lower()  # type: ignore[method-assign]
+    cfg.read(CONFIG_PATH, encoding="utf-8")
+    return cfg
+
+
+def _org_section(cfg: configparser.ConfigParser, prefix: str, org_id: Optional[str]) -> Optional[str]:
+    want = f"{prefix}:{(org_id or '').strip()}".lower()
+    return next((s for s in cfg.sections() if s.strip().lower() == want), None) if org_id else None
+
+
+def org_settings(org_id: Optional[str]) -> Dict[str, str]:
+    """
+    [org:<org_id>] in config.ini: SAP values for one organisation, used when the request
+    (and the Excel file) leave them out. Keys: company_code, currency, customer, gl_account,
+    tax_code, doc_type, bank_gl, value_date_required.
+    """
+    cfg = _plain_config()
+    sec = _org_section(cfg, "org", org_id)
+    return {k: v.strip() for k, v in cfg[sec].items() if v.strip()} if sec else {}
+
+
+def sap_customer_for(org_id: Optional[str], name: Optional[str]) -> Optional[str]:
+    """
+    [customers:<org_id>] in config.ini: DataTwin customer name (active_bt3i.sendername /
+    active_cnx.customername) = SAP customer number. Case and extra spaces are ignored.
+    """
+    key = " ".join(str(name or "").split()).lower()
+    if not key:
+        return None
+    cfg = _plain_config()
+    sec = _org_section(cfg, "customers", org_id)
+    value = cfg[sec].get(key, "").strip() if sec else ""
+    return value or None
+
+
+def is_true(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("true", "1", "yes", "x", "on")
 
 
 # SAP tables the validation can use. List them in [sap] tables (config.ini).
@@ -748,21 +798,29 @@ class SAPBankPostingClient:
             '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" '
             f'xmlns:urn="{self.NS}"><soapenv:Body><urn:{fm}>{body}</urn:{fm}></soapenv:Body></soapenv:Envelope>'
         )
-        r = self.s.post(
-            self.url,
-            params=self.params,
-            data=env.encode("utf-8"),
-            timeout=self.timeout,
-            headers={
-                "Content-Type": "text/xml; charset=utf-8",
-                "SOAPAction": f"{self.NS}:{fm}",
-            },
-        )
+        started = datetime.now()
+        try:
+            r = self.s.post(
+                self.url,
+                params=self.params,
+                data=env.encode("utf-8"),
+                timeout=self.timeout,
+                headers={
+                    "Content-Type": "text/xml; charset=utf-8",
+                    "SOAPAction": f"{self.NS}:{fm}",
+                },
+            )
+        except requests.RequestException as e:
+            logger.error(f"[SAP RFC] {fm}: no response after {(datetime.now() - started).total_seconds():.1f}s: {e}")
+            raise
+        secs = (datetime.now() - started).total_seconds()
         root = ET.fromstring(r.content) if r.content.strip().startswith(b"<") else None
         fault = root.find(".//faultstring") if root is not None else None
         if r.status_code != 200 or fault is not None:
             detail = fault.text if fault is not None else r.text[:300]
+            logger.warning(f"[SAP RFC] {fm}: HTTP {r.status_code} in {secs:.1f}s: {detail}")
             raise RuntimeError(f"SOAP-RFC {fm} failed (HTTP {r.status_code}): {detail}")
+        logger.info(f"[SAP RFC] {fm}: HTTP 200 in {secs:.1f}s")
         resp = root.find(f".//{{{self.NS}}}{fm}.Response")
         if resp is None:
             raise RuntimeError(f"SOAP-RFC {fm}: unexpected response {r.text[:300]}")
@@ -958,7 +1016,7 @@ def process_bank_posting(
             try:
                 from bank_posting.document_link import link_document_ids
 
-                db_update = link_document_ids(posted)
+                db_update = link_document_ids(posted, org_id=org_id)
             except Exception as e:
                 logger.error(f"[BANK POST] documentid update failed: {e}")
                 db_update = {"error": str(e)}
@@ -1036,6 +1094,7 @@ def process_request(
             match_by=match_by,
             update_db=update_db,
             company_code=company_code,
+            org_id=org_id,
         )
 
     res = process_bank_posting(

@@ -11,6 +11,8 @@ Endpoints:
     GET  /health          -> Service health check
     POST /api/bank/post   -> Post bank receipt with SAP invoice clearing
     POST /api/bank/upload -> Same, with the Excel file uploaded from the client
+    POST /api/invoice/post  -> Post new customer invoices in SAP, document no. -> active_bt3i
+    POST /api/clearing/post -> Clear one connection (active_cnx: bank receipt + invoices) in SAP
     GET  /docs            -> Interactive Swagger UI documentation
     GET  /redoc           -> ReDoc documentation
 """
@@ -19,6 +21,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -45,6 +48,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from bank_posting.auth import require_api_key  # noqa: E402
+from bank_posting.clearing import process_clearing  # noqa: E402
+from bank_posting.invoice_post import process_invoice_post  # noqa: E402
 from bank_posting.posting import data_dir, logger, process_bank_posting, process_request  # noqa: E402
 
 
@@ -312,6 +317,170 @@ class BankPostingResponse(BaseModel):
             extra = "allow"
 
 
+class InvoicePostItem(BaseModel):
+    invoice_ref: str = Field(description="DataTwin invoice number (= active_bt3i.documentnumber), up to 25 characters")
+    customer: Optional[str] = Field(default=None, description="SAP customer number (default: request level)")
+    amount: float = Field(description="Gross invoice amount")
+    doc_date: Optional[str] = Field(default=None, description="Invoice date YYYY-MM-DD (default: request level)")
+    posting_date: Optional[str] = Field(default=None, description="Posting date (default: doc_date)")
+    currency: Optional[str] = Field(default=None, description="Currency (default: request level)")
+    company_code: Optional[str] = Field(default=None, description="SAP company code (default: request level)")
+    gl_account: Optional[str] = Field(default=None, description="Revenue G/L account (default: request level)")
+    tax_code: Optional[str] = Field(default=None, description="SAP tax code; empty = no tax (default: request level)")
+    item_text: Optional[str] = Field(default=None, description="Line item text (50 characters)")
+    baseline_date: Optional[str] = Field(default=None, description="Baseline date for payment (optional)")
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
+
+        class Config:
+            extra = "allow"
+
+
+_INVOICE_POST_EXAMPLE = {
+    "org_id": "OM0000000001",
+    "company_code": "DAT1",
+    "gl_account": "40400000",
+    "tax_code": "",
+    "currency": "INR",
+    "dry_run": True,
+    "update_db": True,
+    "items": [
+        {
+            "invoice_ref": "TMI3130009778",
+            "customer": "30000001",
+            "amount": 1165840.0,
+            "doc_date": "2026-03-15",
+            "posting_date": "2026-11-23",
+            "item_text": "WPP MEDIA invoice TMI3130009778",
+        }
+    ],
+}
+
+
+class InvoicePostRequest(BaseModel):
+    org_id: str = Field(description="Organisation (active_bt3i.orgid)")
+    items: Optional[List[InvoicePostItem]] = Field(
+        default=None, description="Invoices to post (or send an Excel file_path instead)"
+    )
+    file_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "FB70 Excel instead of items: S3 key in the tenant bucket (with tenant_id), "
+            "s3://bucket/key, an S3 https URL, or a path on the server"
+        ),
+    )
+    sheet: Optional[str] = Field(default=None, description="Excel sheet (default: first sheet)")
+    tenant_id: Optional[str] = Field(
+        default=None, description="Tenant: file_path is read from s3://dt-<tenant_id>-<env>/<file_path>"
+    )
+    company_code: Optional[str] = Field(default=None, description="Default SAP company code for all items")
+    customer: Optional[str] = Field(default=None, description="Default SAP customer number")
+    gl_account: Optional[str] = Field(default=None, description="Default revenue G/L account")
+    tax_code: Optional[str] = Field(default=None, description="Default SAP tax code (empty = no tax)")
+    currency: Optional[str] = Field(default=None, description="Default currency")
+    doc_date: Optional[str] = Field(default=None, description="Default invoice date")
+    posting_date: Optional[str] = Field(default=None, description="Default posting date")
+    doc_type: Optional[str] = Field(default=None, description="SAP document type (default DR)")
+    dry_run: bool = Field(default=False, description="true = checks + SAP simulation, nothing posted")
+    update_db: bool = Field(default=True, description="Write the SAP document number to active_bt3i.documentid")
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(json_schema_extra={"example": _INVOICE_POST_EXAMPLE})
+    else:
+
+        class Config:
+            schema_extra = {"example": _INVOICE_POST_EXAMPLE}
+
+
+class ClearingInvoice(BaseModel):
+    invoice_ref: str = Field(description="Invoice reference, matched on match_by (XBLNR / ZUONR / BELNR)")
+    amount: float = Field(description="Amount to clear; must equal the open amount in SAP")
+
+
+_CLEARING_EXAMPLE = {
+    "org_id": "OM0000000001",
+    "connection_id": "25677/20261117/30000",
+    "company_code": "DAT1",
+    "customer": "30000001",
+    "bank_gl": "24520000",
+    "currency": "INR",
+    "posting_date": "2026-11-17",
+    "amount": 30000.0,
+    "utr": "PHDFCH01086920602",
+    "match_by": "BELNR",
+    "invoices": [
+        {"invoice_ref": "1800000000", "amount": 10000.0},
+        {"invoice_ref": "1800000007", "amount": 20000.0},
+    ],
+    "dry_run": True,
+    "update_db": True,
+}
+
+
+class ClearingRequest(BaseModel):
+    org_id: str = Field(description="Organisation (active_cnx.orgid)")
+    connection_id: str = Field(description="Connection id (active_cnx.documentid)")
+    company_code: Optional[str] = Field(default=None, description="SAP company code (BUKRS)")
+    customer: Optional[str] = Field(default=None, description="SAP customer number (KUNNR)")
+    bank_gl: Optional[str] = Field(default=None, description="Bank G/L account (HKONT)")
+    currency: Optional[str] = Field(default=None, description="Currency (WAERS)")
+    posting_date: Optional[str] = Field(default=None, description="Posting date (YYYY-MM-DD)")
+    doc_date: Optional[str] = Field(default=None, description="Document date (default: posting_date)")
+    value_date: Optional[str] = Field(default=None, description="Value date (optional)")
+    amount: Optional[float] = Field(
+        default=None, description="Bank receipt amount (default: the connection's bank row)"
+    )
+    utr: Optional[str] = Field(
+        default=None, description="Bank reference / UTR (default: the connection's bank row reference)"
+    )
+    invoices: Optional[List[ClearingInvoice]] = Field(
+        default=None,
+        description="Invoices to clear (default: the connection's invoice rows, connectingdocumentnumber + documentvalue)",
+    )
+    match_by: Optional[str] = Field(
+        default=None, description="SAP field the invoice_ref is matched on: XBLNR | ZUONR | BELNR (default from config)"
+    )
+    item_text: Optional[str] = Field(default=None, description="Bank line text (default: '<connection_id> <utr>')")
+    doc_type: Optional[str] = Field(default=None, description="SAP document type (default DZ)")
+    period: Optional[str] = Field(default=None, description="Posting period 1-16 (optional)")
+    dry_run: bool = Field(default=False, description="true = validate only, nothing posted / updated")
+    update_db: bool = Field(
+        default=True, description="Write the SAP clearing document to active_cnx (cnx_clearing_column)"
+    )
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(json_schema_extra={"example": _CLEARING_EXAMPLE})
+    else:
+
+        class Config:
+            schema_extra = {"example": _CLEARING_EXAMPLE}
+
+
+class ClearingResponse(BaseModel):
+    status: str = Field(description="completed")
+    batch_id: Optional[str] = None
+    dry_run: bool
+    result: str = Field(description="VALID, INVALID, SUCCESS, POSTED_NOT_CLEARED, ERROR, NOT_POSTED")
+    message: Optional[str] = None
+    org_id: Optional[str] = None
+    connection_id: Optional[str] = None
+    document_no: Optional[str] = Field(None, description="SAP posting document")
+    fiscal_year: Optional[str] = None
+    clearing_doc: Optional[str] = Field(None, description="SAP clearing document (written to active_cnx)")
+    clearing_date: Optional[str] = None
+    invoices: List[Dict[str, Any]] = Field(default_factory=list, description="Per-invoice SAP check")
+    db_update: Dict[str, Any] = Field(default_factory=dict)
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
+
+        class Config:
+            extra = "allow"
+
+
 class HealthResponse(BaseModel):
     status: str = Field("ok", example="ok")
     service: str = Field("bank_posting", example="bank_posting")
@@ -409,6 +578,29 @@ class WindowsPathJSONMiddleware:
 app.add_middleware(WindowsPathJSONMiddleware)
 
 
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """One line per request: method, path, status, duration, client (no headers, no API key)."""
+    started = time.perf_counter()
+    client = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
+        request.client.host if request.client else "-"
+    )
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            f"[HTTP] {request.method} {request.url.path} failed after "
+            f"{time.perf_counter() - started:.1f}s (client {client})"
+        )
+        raise
+    if request.url.path != "/health":
+        logger.info(
+            f"[HTTP] {request.method} {request.url.path} -> {response.status_code} "
+            f"in {time.perf_counter() - started:.1f}s (client {client})"
+        )
+    return response
+
+
 @app.get(
     "/",
     include_in_schema=False,
@@ -480,7 +672,94 @@ async def bank_post(payload: BankPostingRequest):
             content={"status": "error", "message": str(e)},
         )
     except Exception as e:
-        logger.error(f"Bank posting failed: {e}")
+        logger.exception(f"Bank posting failed: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": "error", "message": str(e)},
+        )
+
+
+@app.post(
+    "/api/invoice/post",
+    response_model=BankPostingResponse,
+    responses={
+        200: {"description": "Per-invoice result (check results[].status)"},
+        400: {"model": ErrorResponse, "description": "Bad request"},
+        401: {"description": "Missing or invalid X-API-Key"},
+        500: {"model": ErrorResponse, "description": "Server, database or SAP error"},
+    },
+    dependencies=[Depends(require_api_key)],
+    tags=["Invoice Posting"],
+    summary="Post New Customer Invoices in SAP",
+    description=(
+        "Posts each invoice in SAP via `Z_INVOICE_POST` (Dr customer, key 01 / Cr revenue G/L, key 50; "
+        "tax calculated by SAP when `tax_code` is set) and writes the new SAP document number to "
+        "`active_bt3i.documentid` (row: `orgid` + `documentnumber = invoice_ref`).\n\n"
+        "An invoice whose reference is already in SAP is linked, not posted again (`ALREADY_IN_SAP`). "
+        "`dry_run: true` runs the checks and an SAP simulation; nothing is posted.\n\n"
+        "Status: VALID, INVALID, POSTED, ALREADY_IN_SAP, ERROR, NOT_POSTED."
+    ),
+)
+async def invoice_post(payload: InvoicePostRequest):
+    data = payload.model_dump() if PYDANTIC_V2 else payload.dict()
+    try:
+        return await run_in_threadpool(
+            process_invoice_post, data, dry_run=bool(payload.dry_run), update_db=bool(payload.update_db)
+        )
+    except (ValueError, FileNotFoundError) as e:
+        logger.warning(f"[INVOICE POST] 400 Bad Request: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "message": str(e)},
+        )
+    except Exception as e:
+        logger.exception(f"Invoice posting failed: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": "error", "message": str(e)},
+        )
+
+
+@app.post(
+    "/api/clearing/post",
+    response_model=ClearingResponse,
+    responses={
+        200: {"description": "Validation / posting result (check `result`)"},
+        400: {"model": ErrorResponse, "description": "Bad request"},
+        401: {"description": "Missing or invalid X-API-Key"},
+        500: {"model": ErrorResponse, "description": "Server, database or SAP error"},
+    },
+    dependencies=[Depends(require_api_key)],
+    tags=["Connection Clearing"],
+    summary="Clear One Connection in SAP",
+    description=(
+        "Clears one DataTwin connection (`active_cnx`: one bank receipt + 1..n invoices) in SAP with "
+        "**one** document via `Z_BANK_POST_CLEAR_MULTI` (Dr bank G/L, every invoice cleared), then writes "
+        "the clearing document number to `active_cnx.clearingdocid` (config `cnx_clearing_column`) on "
+        "every row of the connection.\n\n"
+        "Invoices, amount and UTR default to the connection's rows. Bank amount must equal the sum of the "
+        "invoices and each invoice must be open in SAP with exactly that amount (no partial clearing). "
+        "`dry_run: true` = validate only."
+    ),
+)
+async def clearing_post(payload: ClearingRequest):
+    data = payload.model_dump() if PYDANTIC_V2 else payload.dict()
+    try:
+        return await run_in_threadpool(
+            process_clearing,
+            data,
+            dry_run=bool(payload.dry_run),
+            update_db=bool(payload.update_db),
+            match_by=payload.match_by,
+        )
+    except ValueError as e:
+        logger.warning(f"[CLEARING] 400 Bad Request: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "message": str(e)},
+        )
+    except Exception as e:
+        logger.exception(f"Connection clearing failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},
@@ -559,7 +838,7 @@ async def bank_upload(
             content={"status": "error", "message": str(e)},
         )
     except Exception as e:
-        logger.error(f"Bank upload posting failed: {e}")
+        logger.exception(f"Bank upload posting failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},

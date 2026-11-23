@@ -1,0 +1,8 @@
+{
+  "org_id": "OM0000000001",
+  "tenant_id": "DM00005",
+  "file_path": "AR Inbox Post ERP/OM0000000001/invoice_fb70_sample.xlsx",
+  "sheet": "FB70_Upload",
+  "dry_run": true,
+  "update_db": true
+}

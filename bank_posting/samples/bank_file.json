@@ -1,0 +1,9 @@
+{
+  "file_type": "bank",
+  "tenant_id": "DM00005",
+  "org_id": "OM0000000002",
+  "file_path": "AR Inbox Post ERP/OM0000000002/bank_CTXBS0126270000028_1795429634553.xlsx",
+  "sheet": "FB70_Upload",
+  "dry_run": true,
+  "update_db": true
+}

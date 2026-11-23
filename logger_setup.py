@@ -1,29 +1,32 @@
 """
 =============================================================================
-Centralized Timestamped Logger for SAP Pipeline
+Logging for the SAP bank posting API
 =============================================================================
-Features:
-  1. Writes to a 'log' folder in the server's current working directory
-     (no static paths). Override with [environment] log_dir in config.ini or
-     the LOG_DIR env var; relative values are resolved against the current
-     working directory (in Docker: /app/log).
-  2. Generates a timestamped log file on every session/run:
-     Example: ./log/log_20261110_133500.txt
-  3. Logs simultaneously to Terminal Console and Timestamped Log File.
-  4. Automatically shared across app.py, db_manager.py, sync_bsid_to_bt3i.py, and api.py.
+  * One log file per day:  <log_dir>/log_YYYYMMDD.txt   (e.g. log/log_20261123.txt)
+    All processes (uvicorn workers, CLI scripts) append to the same file; it
+    switches to a new file at midnight (server time).
+  * Files older than [environment] log_retention_days (default 30) are deleted.
+  * Every line also goes to the console (docker logs).
+  * Folder: LOG_DIR env var > [environment] log_dir in config.ini > ./log.
+    Relative values are resolved against the current working directory
+    (in Docker: /app/log, mounted from /opt/sap-bank-clearing-api/log).
+  * Level: [environment] log_level (default INFO).
 =============================================================================
 """
 
+import configparser
+import logging
 import os
 import sys
-import logging
-import configparser
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.ini"
+FORMAT = "%(asctime)s [%(levelname)s] [%(process)d] [%(name)s] %(message)s"
+DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _read_env_config() -> Union[configparser.SectionProxy, dict]:
@@ -47,59 +50,118 @@ def _resolve_log_dir() -> Path:
 
 LOG_DIR = _resolve_log_dir()
 
-_CURRENT_LOG_FILE: Optional[Path] = None
+
+class DailyFileHandler(logging.Handler):
+    """
+    Appends to <directory>/<prefix>_<YYYYMMDD>.<ext> and moves to the next day's file at
+    midnight. Files are never renamed, so several processes can share them safely.
+    """
+
+    def __init__(self, directory: Path, prefix: str = "log", ext: str = "txt", keep_days: int = 30):
+        super().__init__()
+        self.directory = Path(directory)
+        self.prefix = prefix
+        self.ext = ext
+        self.keep_days = keep_days
+        self._day: Optional[str] = None
+        self._stream = None
+
+    def path_for(self, day: str) -> Path:
+        return self.directory / f"{self.prefix}_{day}.{self.ext}"
+
+    def _open(self, day: str) -> None:
+        if self._stream:
+            self._stream.close()
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self._stream = open(self.path_for(day), "a", encoding="utf-8")
+        self._day = day
+        self._delete_old()
+
+    def _delete_old(self) -> None:
+        if self.keep_days <= 0:
+            return
+        cutoff = (datetime.now() - timedelta(days=self.keep_days)).strftime("%Y%m%d")
+        for f in self.directory.glob(f"{self.prefix}_*.{self.ext}"):
+            day = f.stem[len(self.prefix) + 1:]
+            if len(day) == 8 and day.isdigit() and day < cutoff:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass  # another process deleted it first
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            day = datetime.fromtimestamp(record.created).strftime("%Y%m%d")
+            if day != self._day:
+                self._open(day)
+            self._stream.write(self.format(record) + "\n")
+            self._stream.flush()
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        self.acquire()
+        try:
+            if self._stream:
+                self._stream.close()
+                self._stream = None
+        finally:
+            self.release()
+        super().close()
+
+
+_LOCK = threading.Lock()
+_FILE_HANDLER: Optional[DailyFileHandler] = None
+_CONSOLE_HANDLER: Optional[logging.Handler] = None
+
+
+def _level() -> int:
+    name = str(_read_env_config().get("log_level", "INFO") or "INFO").upper()
+    return getattr(logging, name, logging.INFO)
+
+
+def _handlers():
+    """One console handler and one file handler, shared by every logger of this process."""
+    global _FILE_HANDLER, _CONSOLE_HANDLER
+    with _LOCK:
+        if _CONSOLE_HANDLER is None:
+            formatter = logging.Formatter(fmt=FORMAT, datefmt=DATEFMT)
+            _CONSOLE_HANDLER = logging.StreamHandler(sys.stdout)
+            _CONSOLE_HANDLER.setFormatter(formatter)
+            env = _read_env_config()
+            try:
+                keep = int(env.get("log_retention_days", 30) or 30)
+            except ValueError:
+                keep = 30
+            try:
+                _FILE_HANDLER = DailyFileHandler(
+                    LOG_DIR,
+                    prefix=env.get("log_file_prefix", "log") or "log",
+                    ext=env.get("log_extension", "txt") or "txt",
+                    keep_days=keep,
+                )
+                _FILE_HANDLER.setFormatter(formatter)
+            except Exception as e:  # logging must never stop the API
+                print(f"Log file handler not available ({LOG_DIR}): {e}", file=sys.stderr)
+                _FILE_HANDLER = None
+        return _CONSOLE_HANDLER, _FILE_HANDLER
 
 
 def get_session_log_file() -> Path:
-    """
-    Returns the active session timestamped log file path,
-    creating it if not already initialized.
-    """
-    global _CURRENT_LOG_FILE
-    if _CURRENT_LOG_FILE is not None:
-        return _CURRENT_LOG_FILE
-
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    env_cfg = _read_env_config()
-    prefix = env_cfg.get("log_file_prefix", "log") or "log"
-    ext = env_cfg.get("log_extension", "txt") or "txt"
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _CURRENT_LOG_FILE = LOG_DIR / f"{prefix}_{timestamp}.{ext}"
-    return _CURRENT_LOG_FILE
+    """Today's log file (kept for older callers)."""
+    _, fh = _handlers()
+    day = datetime.now().strftime("%Y%m%d")
+    return fh.path_for(day) if fh else LOG_DIR / f"log_{day}.txt"
 
 
 def get_logger(name: str = "SAP_Pipeline") -> logging.Logger:
-    """
-    Returns configured logger writing to both Console & Timestamped File.
-    """
+    """Logger writing to the console and to the daily log file."""
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(_level())
     logger.propagate = False
-
-    # Prevent duplicate handlers if called multiple times
     if not logger.handlers:
-        formatter = logging.Formatter(
-            fmt="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
-        )
-
-        # 1. Console Stream Handler
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-        # 2. Timestamped File Handler in 'log/' folder
-        log_file = get_session_log_file()
-        try:
-            file_handler = logging.FileHandler(str(log_file), encoding="utf-8")
-            file_handler.setLevel(logging.INFO)
-            file_handler.setFormatter(formatter)
+        console, file_handler = _handlers()
+        logger.addHandler(console)
+        if file_handler:
             logger.addHandler(file_handler)
-            logger.info(f"[LOG INIT] Session log file active at: {log_file.resolve()}")
-        except Exception as e:
-            logger.warning(f"Failed to create file handler for {log_file}: {e}")
-
     return logger

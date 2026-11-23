@@ -443,6 +443,8 @@ class ClearingRequest(BaseModel):
         default=None, description="SAP field the invoice_ref is matched on: XBLNR | ZUONR | BELNR (default from config)"
     )
     item_text: Optional[str] = Field(default=None, description="Bank line text (default: '<connection_id> <utr>')")
+    house_bank: Optional[str] = Field(default=None, description="SAP house bank (HBKID), if the bank G/L requires it")
+    house_bank_account: Optional[str] = Field(default=None, description="SAP house bank account ID (HKTID)")
     doc_type: Optional[str] = Field(default=None, description="SAP document type (default DZ)")
     period: Optional[str] = Field(default=None, description="Posting period 1-16 (optional)")
     dry_run: bool = Field(default=False, description="true = validate only, nothing posted / updated")

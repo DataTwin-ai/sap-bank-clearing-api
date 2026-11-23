@@ -103,6 +103,13 @@ DataTwin invoice number.
 `EV_STATUS`: `S` posted, `V` simulation passed, `D` reference already posted (`EV_BELNR` = that document),
 `E` error, nothing posted.
 
+## House bank parameters (2026-11-24)
+
+`Z_BANK_POST_CLEAR` and `Z_BANK_POST_CLEAR_MULTI` take optional `IV_HBKID` (house bank) and `IV_HKTID`
+(house bank account ID). When given they are posted on the bank line (`BSEG-HBKID`, `BSEG-HKTID`); bank G/Ls
+whose field status requires them (DPDL 10601012: SBIDL / SBIM) fail with "Make an entry in mandatory field
+House Bank" without them. Existing callers are not affected.
+
 ## Authorisation for the calling user
 
 `S_RFC` (function group `ZBANK_POST`), `S_TCODE` FB05,

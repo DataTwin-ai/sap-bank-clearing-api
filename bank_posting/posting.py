@@ -113,7 +113,7 @@ def org_settings(org_id: Optional[str]) -> Dict[str, str]:
     """
     [org:<org_id>] in config.ini: SAP values for one organisation, used when the request
     (and the Excel file) leave them out. Keys: company_code, currency, customer, gl_account,
-    tax_code, doc_type, bank_gl, value_date_required.
+    tax_code, doc_type, bank_gl, value_date_required, house_bank, house_bank_account.
     """
     cfg = _plain_config()
     sec = _org_section(cfg, "org", org_id)
@@ -409,6 +409,8 @@ def header_of(rows: List[tuple]) -> List[str]:
 
 
 FILE_TYPES = ("bank", "invoice")
+# bank rows: fields that fall back to config.ini [org:<org_id>] when the row leaves them empty
+BANK_ORG_KEYS = ("company_code", "currency", "bank_gl", "house_bank", "house_bank_account")
 
 
 def detect_file_type(rows: List[tuple]) -> Optional[str]:
@@ -549,6 +551,9 @@ def normalise(raw: Dict[str, Any], defaults: Dict[str, str]) -> Dict[str, Any]:
         # only sent when explicitly given: BSEG-VALUT may be hidden for the bank G/L
         "value_date": parse_date(raw.get("value_date")),
         "item_text": _text(raw.get("item_text"))[:50],
+        # house bank / account ID: needed by bank G/Ls whose field status requires them
+        "house_bank": _text(raw.get("house_bank")).upper(),
+        "house_bank_account": _text(raw.get("house_bank_account")).upper(),
     }
 
 
@@ -585,9 +590,11 @@ def validate(item: Dict[str, Any]) -> List[str]:
         errs.append(f"Invalid customer amount: '{_text(item['cust_amount_raw'])}'")
     if not item["invoice_ref"]:
         errs.append("Invoice reference is missing - nothing to clear")
-    if len(item["utr"]) > 16:
+    # SAP header reference (XBLNR) holds 16 characters. A 17-18 character UTR (e.g. PHDFCH01086920604)
+    # is not sent to SAP as reference (no SAP duplicate check by UTR) but still links active_bs.transactionref.
+    if len(item["utr"]) > 18:
         errs.append(
-            f"UTR '{item['utr']}' is {len(item['utr'])} characters; SAP reference (XBLNR) allows 16"
+            f"UTR '{item['utr']}' is {len(item['utr'])} characters; at most 18 are supported"
         )
     if item["period"] and not (
         item["period"].isdigit() and 1 <= int(item["period"]) <= 16
@@ -850,8 +857,10 @@ class SAPBankPostingClient:
             "IV_WRBTR": str(item["amount"]),
             "IV_MATCH_BY": match_by,
             "IV_INVOICE_REF": item["invoice_ref"],
-            "IV_UTR": item["utr"],
+            "IV_UTR": item["utr"] if len(item["utr"]) <= 16 else None,
             "IV_SGTXT": item["item_text"],
+            "IV_HBKID": item.get("house_bank") or None,
+            "IV_HKTID": item.get("house_bank_account") or None,
         }
         try:
             resp = self._call(self.fm, params)
@@ -928,7 +937,20 @@ def process_bank_posting(
     prepared: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     seen = set()
 
+    # request / Excel value > config.ini [org:<org_id>] (company code, currency, bank G/L, house bank)
+    org = org_settings(org_id)
+    from_config: List[str] = []
     for raw in raw_items:
+        raw = dict(raw)
+        for k in BANK_ORG_KEYS:
+            if _blank(raw.get(k)) and org.get(k):
+                raw[k] = org[k]
+                if k not in from_config:
+                    from_config.append(k)
+        if _blank(raw.get("value_date")) and is_true(org.get("value_date_required")):
+            raw["value_date"] = raw.get("posting_date")
+            if "value_date (= posting_date)" not in from_config:
+                from_config.append("value_date (= posting_date)")
         item = normalise(raw, cfg)
         errs = validate(item)
         key = (item["company_code"], item["customer"], item["invoice_ref"].upper())
@@ -959,6 +981,11 @@ def process_bank_posting(
             "message": "; ".join(errs) if errs else "Validation passed",
             **extra,
         }
+        if 16 < len(item["utr"]) <= 18:
+            res["warnings"] = [
+                f"UTR '{item['utr']}' is longer than 16 characters: not sent as SAP reference (XBLNR), "
+                f"SAP's duplicate check by UTR is skipped; active_bs is still linked by this UTR"
+            ]
         results.append(res)
         if not errs:
             prepared.append((item, res))
@@ -1033,6 +1060,7 @@ def process_bank_posting(
         "dry_run": dry_run,
         "match_by": match_by,
         "source": file_path or "json",
+        "from_config": from_config,
         "sap_posting": sap_status,
         "sap_tables": {"used": sap_tables, "ignored": ignored_tables},
         "total": len(results),

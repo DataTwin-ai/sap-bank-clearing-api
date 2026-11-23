@@ -756,21 +756,29 @@ class SAPBankPostingClient:
             '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" '
             f'xmlns:urn="{self.NS}"><soapenv:Body><urn:{fm}>{body}</urn:{fm}></soapenv:Body></soapenv:Envelope>'
         )
-        r = self.s.post(
-            self.url,
-            params=self.params,
-            data=env.encode("utf-8"),
-            timeout=self.timeout,
-            headers={
-                "Content-Type": "text/xml; charset=utf-8",
-                "SOAPAction": f"{self.NS}:{fm}",
-            },
-        )
+        started = datetime.now()
+        try:
+            r = self.s.post(
+                self.url,
+                params=self.params,
+                data=env.encode("utf-8"),
+                timeout=self.timeout,
+                headers={
+                    "Content-Type": "text/xml; charset=utf-8",
+                    "SOAPAction": f"{self.NS}:{fm}",
+                },
+            )
+        except requests.RequestException as e:
+            logger.error(f"[SAP RFC] {fm}: no response after {(datetime.now() - started).total_seconds():.1f}s: {e}")
+            raise
+        secs = (datetime.now() - started).total_seconds()
         root = ET.fromstring(r.content) if r.content.strip().startswith(b"<") else None
         fault = root.find(".//faultstring") if root is not None else None
         if r.status_code != 200 or fault is not None:
             detail = fault.text if fault is not None else r.text[:300]
+            logger.warning(f"[SAP RFC] {fm}: HTTP {r.status_code} in {secs:.1f}s: {detail}")
             raise RuntimeError(f"SOAP-RFC {fm} failed (HTTP {r.status_code}): {detail}")
+        logger.info(f"[SAP RFC] {fm}: HTTP 200 in {secs:.1f}s")
         resp = root.find(f".//{{{self.NS}}}{fm}.Response")
         if resp is None:
             raise RuntimeError(f"SOAP-RFC {fm}: unexpected response {r.text[:300]}")

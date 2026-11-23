@@ -376,15 +376,24 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
     if not item["org_id"] or not item["connection_id"]:
         raise ValueError("org_id and connection_id (active_cnx.documentid) are required")
 
-    batch_id = f"CLR{datetime.now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
-    logger.info(f"[CLEARING] {batch_id}: {item['org_id']} / {item['connection_id']}, "
-                f"dry_run={dry_run}, match_by={match_by}")
+    started = datetime.now()
+    batch_id = f"CLR{started:%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
+    log = f"[CLEARING] {batch_id}"
+    logger.info(
+        f"{log}: start, org {item['org_id']}, connection {item['connection_id']}, dry_run={dry_run}, "
+        f"update_db={update_db}, match_by={match_by}, company={item['company_code']} customer={item['customer']} "
+        f"bank_gl={item['bank_gl']} posting_date={item['posting_date']} amount={item['amount']} {item['currency']} "
+        f"utr={item['utr'] or '-'} invoices={[(i['invoice_ref'], str(i['amount'])) for i in item['invoices']] or 'from connection'}"
+    )
 
     # 1. connection
     try:
         cnx = read_connection(item["org_id"], item["connection_id"], column)
     except Exception as e:
+        logger.exception(f"{log}: could not read {CNX_TABLE}: {e}")
         raise RuntimeError(f"Could not read {CNX_TABLE}: {e}") from e
+    logger.info(f"{log}: connection rows={len(cnx['rows'])} (invoice {len(cnx['invoices'])}, bank {len(cnx['bank'])}), "
+                f"{column} exists={cnx['column_exists']}, already cleared by={cnx['cleared_by'] or '-'}")
 
     errs: List[str] = []
     warnings: List[str] = []
@@ -398,6 +407,12 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
             item, cnx, match_by, sap_doc_ids=lambda refs: bt3i_document_ids(item["org_id"], refs)
         )
         errs.extend(fill_errs)
+        if filled:
+            logger.info(
+                f"{log}: from connection {filled}: amount={item['amount']} utr={item['utr']} invoices="
+                + ", ".join(f"{i.get('connection_ref', i['invoice_ref'])}->{i['invoice_ref']} {i['amount']}"
+                            for i in item["invoices"])
+            )
         if cnx["cleared_by"]:
             errs.append(f"Connection is already cleared in SAP: {column} = {', '.join(cnx['cleared_by'])}")
     if update_db and not cnx["column_exists"]:
@@ -424,11 +439,15 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
         try:
             index = OpenItemIndex(sap_tables)
         except Exception as e:
+            logger.exception(f"{log}: could not read {', '.join(sap_tables)} from SAP: {e}")
             raise RuntimeError(f"Could not read {', '.join(sap_tables)} from SAP: {e}") from e
         errs.extend(check_invoices_in_sap(item, index, match_by))
+        for inv in item["invoices"]:
+            logger.info(f"{log}: SAP check {inv['invoice_ref']}: {inv.get('sap_status')} - {inv.get('message')}")
 
     result = "INVALID" if errs else "VALID"
     message = "; ".join(errs) if errs else "Validation passed"
+    logger.info(f"{log}: checks {result} - {message}" + (f" | warnings: {'; '.join(warnings)}" if warnings else ""))
     sap_status = "skipped (dry_run)" if dry_run else ("skipped (invalid)" if errs else None)
     posted: Dict[str, Any] = {}
 
@@ -437,13 +456,17 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
         client = SAPClearingClient(cfg)
         ok, msg = client.available()
         if not ok:
+            logger.warning(f"{log}: {msg}")
             result, message, sap_status = "NOT_POSTED", msg, msg
         else:
             sap_status = "ok"
+            logger.info(f"{log}: POSTING in SAP ({client.fm}) amount={item['amount']} {item['currency']} "
+                        f"invoices={[i['invoice_ref'] for i in item['invoices']]}")
             posted = client.post_connection(item, match_by)
             result = {"S": "SUCCESS", "W": "POSTED_NOT_CLEARED"}.get(posted.get("Status"), "ERROR")
             message = posted.get("Message") or ("Posted" if result == "SUCCESS" else "Unknown SAP error")
-            logger.info(f"[CLEARING] {batch_id}: {result} {posted.get('Belnr')} - {message}")
+            logger.info(f"{log} SAP: {result} document={posted.get('Belnr')}/{posted.get('Gjahr')} "
+                        f"clearing={posted.get('Augbl')} cleared={posted.get('Cleared')} - {message}")
 
     clearing_doc = posted.get("Augbl") or posted.get("Belnr")
 
@@ -454,12 +477,14 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
             try:
                 db_update = write_clearing_doc(item["org_id"], item["connection_id"], clearing_doc, column)
             except Exception as e:
-                logger.error(f"[CLEARING] {batch_id}: SAP document {clearing_doc} posted, "
-                             f"but {CNX_TABLE}.{column} update failed: {e}")
+                logger.exception(f"{log}: SAP document {clearing_doc} posted, "
+                                 f"but {CNX_TABLE}.{column} update failed: {e}")
                 db_update = {"error": str(e), "sap_document": clearing_doc}
         else:
             db_update = {"skipped": "nothing posted"}
 
+    logger.info(f"{log}: done in {(datetime.now() - started).total_seconds():.1f}s, result={result}, "
+                f"clearing_doc={clearing_doc or '-'}, db={db_update}")
     return {
         "status": "completed",
         "batch_id": batch_id,

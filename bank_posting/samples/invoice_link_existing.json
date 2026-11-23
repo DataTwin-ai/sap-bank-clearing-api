@@ -1,0 +1,19 @@
+{
+  "file_type": "invoice",
+  "org_id": "OM0000000001",
+  "company_code": "DAT1",
+  "match_by": "BELNR",
+  "dry_run": true,
+  "update_db": true,
+  "items": [
+    {
+      "invoice_ref": "1800000000",
+      "customer": "30000001",
+      "amount": 10000,
+      "currency": "INR",
+      "doc_date": "2026-10-22",
+      "posting_date": "2026-10-22",
+      "gl_account": "34400000"
+    }
+  ]
+}

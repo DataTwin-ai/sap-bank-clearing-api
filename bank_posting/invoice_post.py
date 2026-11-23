@@ -179,11 +179,19 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
     defaults = {k: payload.get(k) for k in ("company_code", "customer", "gl_account", "tax_code", "currency",
                                             "doc_date", "posting_date", "baseline_date", "period", "doc_type")}
 
-    batch_id = f"INP{datetime.now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
-    logger.info(f"[INVOICE POST] {batch_id}: {len(raw_items)} item(s), org {org_id}, dry_run={dry_run}")
+    started = datetime.now()
+    batch_id = f"INP{started:%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
+    log = f"[INVOICE POST] {batch_id}"
+    logger.info(f"{log}: start, org {org_id}, {len(raw_items)} item(s), dry_run={dry_run}, update_db={update_db}")
 
     items = [normalise_invoice_post({**r, "row": r.get("row", n)}, defaults, cfg)
              for n, r in enumerate(raw_items, start=1)]
+    for i in items:
+        logger.info(
+            f"{log} row {i['row']} input: ref={i['invoice_ref']} company={i['company_code']} "
+            f"customer={i['customer']} amount={i['amount']} {i['currency']} gl={i['gl_account']} "
+            f"tax={i['tax_code'] or '-'} doc_date={i['doc_date']} posting_date={i['posting_date']} type={i['doc_type']}"
+        )
 
     try:
         linked_ids = bt3i_document_ids(org_id, [i["invoice_ref"] for i in items if i["invoice_ref"]])
@@ -257,6 +265,8 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
         if warns:
             res["warnings"] = warns
         results.append(res)
+        logger.info(f"{log} row {res['row']} checks: {res['status']} - {res['message']}"
+                    + (f" | warnings: {'; '.join(warns)}" if warns else ""))
 
     # SAP: simulate (dry run) or post
     sap_status = "nothing to post"
@@ -264,6 +274,7 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
         client = SAPInvoicePostClient(cfg)
         ok, msg = client.available()
         if not ok:
+            logger.warning(f"{log}: {msg}")
             sap_status = msg
             for _, res in todo:
                 if dry_run:
@@ -273,6 +284,8 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
         else:
             sap_status = "simulated" if dry_run else "ok"
             for item, res in todo:
+                logger.info(f"{log} row {res['row']}: {'simulating' if dry_run else 'POSTING'} in SAP "
+                            f"({client.fm}) ref={item['invoice_ref']} amount={item['amount']} {item['currency']}")
                 d = client.post(item, simulate=dry_run)
                 st = d.get("Status")
                 if st == "V":
@@ -286,8 +299,8 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
                 else:
                     res.update(status="INVALID" if dry_run else "ERROR",
                                message=d.get("Message") or "Unknown SAP error")
-                logger.info(f"[INVOICE POST] {batch_id} row {res['row']}: {res['status']} "
-                            f"{res['document_no']} - {res['message']}")
+                logger.info(f"{log} row {res['row']} SAP: {res['status']} "
+                            f"document={res['document_no']}/{res['fiscal_year']} - {res['message']}")
 
     # DB: active_bt3i.documentid
     db_update: Dict[str, Any] = {"skipped": "dry_run" if dry_run else "disabled"}
@@ -298,8 +311,12 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
             try:
                 from bank_posting.document_link import link_document_ids
                 db_update = link_document_ids(linked, invoices=True, bank=False, org_id=org_id)
+                logger.info(f"{log}: active_bt3i.documentid updated on {db_update.get('invoices_updated')} row(s): "
+                            + ", ".join(f"{m['documentnumber']}={m['documentid']}"
+                                        for m in db_update.get("invoice_matches", [])))
             except Exception as e:
-                logger.error(f"[INVOICE POST] {batch_id}: active_bt3i.documentid update failed: {e}")
+                logger.exception(f"{log}: SAP document(s) {[x['document_no'] for x in linked]} exist, "
+                                 f"but active_bt3i.documentid update failed: {e}")
                 db_update = {"error": str(e), "sap_documents": [x["document_no"] for x in linked]}
         else:
             db_update = {"skipped": "no SAP documents"}
@@ -307,6 +324,7 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
     counts: Dict[str, int] = {}
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
+    logger.info(f"{log}: done in {(datetime.now() - started).total_seconds():.1f}s, {counts}, sap={sap_status}")
     return {
         "status": "completed",
         "batch_id": batch_id,

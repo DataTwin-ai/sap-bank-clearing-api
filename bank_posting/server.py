@@ -21,6 +21,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -564,6 +565,29 @@ class WindowsPathJSONMiddleware:
 app.add_middleware(WindowsPathJSONMiddleware)
 
 
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """One line per request: method, path, status, duration, client (no headers, no API key)."""
+    started = time.perf_counter()
+    client = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or (
+        request.client.host if request.client else "-"
+    )
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            f"[HTTP] {request.method} {request.url.path} failed after "
+            f"{time.perf_counter() - started:.1f}s (client {client})"
+        )
+        raise
+    if request.url.path != "/health":
+        logger.info(
+            f"[HTTP] {request.method} {request.url.path} -> {response.status_code} "
+            f"in {time.perf_counter() - started:.1f}s (client {client})"
+        )
+    return response
+
+
 @app.get(
     "/",
     include_in_schema=False,
@@ -635,7 +659,7 @@ async def bank_post(payload: BankPostingRequest):
             content={"status": "error", "message": str(e)},
         )
     except Exception as e:
-        logger.error(f"Bank posting failed: {e}")
+        logger.exception(f"Bank posting failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},
@@ -676,7 +700,7 @@ async def invoice_post(payload: InvoicePostRequest):
             content={"status": "error", "message": str(e)},
         )
     except Exception as e:
-        logger.error(f"Invoice posting failed: {e}")
+        logger.exception(f"Invoice posting failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},
@@ -722,7 +746,7 @@ async def clearing_post(payload: ClearingRequest):
             content={"status": "error", "message": str(e)},
         )
     except Exception as e:
-        logger.error(f"Connection clearing failed: {e}")
+        logger.exception(f"Connection clearing failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},
@@ -801,7 +825,7 @@ async def bank_upload(
             content={"status": "error", "message": str(e)},
         )
     except Exception as e:
-        logger.error(f"Bank upload posting failed: {e}")
+        logger.exception(f"Bank upload posting failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},

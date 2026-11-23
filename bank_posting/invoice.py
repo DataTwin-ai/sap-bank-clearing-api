@@ -214,6 +214,7 @@ def process_invoice_file(
     match_by: Optional[str] = None,
     update_db: bool = True,
     company_code: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     match_by = (match_by or "ANY").upper()
     if match_by not in INVOICE_MATCH_FIELDS:
@@ -274,7 +275,7 @@ def process_invoice_file(
         if linked:
             try:
                 from bank_posting.document_link import link_document_ids
-                db_update = link_document_ids(linked, invoices=True, bank=False)
+                db_update = link_document_ids(linked, invoices=True, bank=False, org_id=org_id)
             except Exception as e:
                 logger.error(f"[INVOICE] documentid update failed: {e}")
                 db_update = {"error": str(e)}

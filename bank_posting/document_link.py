@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
+from sqlalchemy import text
 
 from db_manager import get_db_credentials, get_engine
 from logger_setup import get_logger
@@ -90,10 +91,12 @@ def _update_documentid(cur, table: str, pk: List[str], rows: pd.DataFrame) -> in
 
 
 def link_document_ids(posted: List[Dict[str, Any]], env: Optional[str] = None,
-                      invoices: bool = True, bank: bool = True) -> Dict[str, Any]:
+                      invoices: bool = True, bank: bool = True,
+                      org_id: Optional[str] = None) -> Dict[str, Any]:
     """
     posted: [{"assignment": <invoice ref / UTR>, "document_no": <SAP doc>}, ...]
     invoices / bank: which table(s) to update (active_bt3i / active_bs).
+    org_id: only rows of this organisation (all organisations when not given).
     Returns counts and the matched keys.
     """
     src = pd.DataFrame(
@@ -105,11 +108,15 @@ def link_document_ids(posted: List[Dict[str, Any]], env: Optional[str] = None,
 
     engine = get_engine(env)
     empty = pd.DataFrame(columns=["documentnumber", "transactionref", "documentid"])
+    org_sql = " and orgid = :org" if org_id else ""
+    params = {"org": org_id} if org_id else None
     inv_result = pd.read_sql_query(
-        f"select * from {INV_TABLE} where transactiontype = 'Invoice' and documentid is null", engine
+        text(f"select * from {INV_TABLE} where transactiontype = 'Invoice' and documentid is null{org_sql}"),
+        engine, params=params,
     ) if invoices else empty
     bank_result = pd.read_sql_query(
-        f"select * from {BANK_TABLE} where transactiontype = 'Bank' and documentid is null", engine
+        text(f"select * from {BANK_TABLE} where transactiontype = 'Bank' and documentid is null{org_sql}"),
+        engine, params=params,
     ) if bank else empty
 
     matched_inv, matched_bank = connect_document_id(df=src, inv_result=inv_result, bank=bank_result)

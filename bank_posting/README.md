@@ -8,6 +8,8 @@ which posts the bank receipt and clears the customer invoice.
 ```
 bank_posting/
 ├── posting.py        # Excel/JSON read, validation, open-item check, SAP call
+├── invoice_post.py   # POST /api/invoice/post: new SAP invoice, number -> active_bt3i.documentid
+├── clearing.py       # POST /api/clearing/post: one connection (active_cnx), several invoices
 ├── document_link.py  # writes SAP document no. back to active_bt3i / active_bs
 ├── server.py         # standalone API server (port 8001)
 ├── __init__.py
@@ -16,6 +18,10 @@ bank_posting/
 
 Shared from the project root: `config.ini` (`[sap]` connection, `[bank_posting]`
 settings), `logger_setup.py`, `sap_odata_extractor.py`.
+
+Invoice posting (new SAP invoice, number to `active_bt3i.documentid`) and connection
+clearing (one bank receipt, several invoices, clearing document to `active_cnx.clearingdocid`)
+are described in [CONNECTION_CLEARING_API.md](CONNECTION_CLEARING_API.md).
 
 ## Run
 

@@ -76,6 +76,14 @@ def load_bank_config() -> Dict[str, str]:
     sec = cfg["bank_posting"] if cfg.has_section("bank_posting") else {}
     return {
         "rfc_function": sec.get("rfc_function", "Z_BANK_POST_CLEAR"),
+        # connection clearing (POST /api/clearing/post): one bank receipt, several invoices
+        "clearing_rfc_function": sec.get("clearing_rfc_function", "Z_BANK_POST_CLEAR_MULTI"),
+        "cnx_clearing_column": sec.get("cnx_clearing_column", "clearingdocid").strip().lower(),
+        # BELNR = SAP document number from active_bt3i.documentid (set by /api/invoice/post)
+        "clearing_match_by": sec.get("clearing_match_by", "BELNR").strip().upper(),
+        # new customer invoices (POST /api/invoice/post)
+        "invoice_rfc_function": sec.get("invoice_rfc_function", "Z_INVOICE_POST"),
+        "invoice_doc_type": sec.get("invoice_doc_type", "DR").strip().upper(),
         "default_doc_type": sec.get("default_doc_type", "DZ"),
         "default_match_by": sec.get("default_match_by", "XBLNR").upper(),
         "check_open_items": sec.get("check_open_items", "true").lower()
@@ -958,7 +966,7 @@ def process_bank_posting(
             try:
                 from bank_posting.document_link import link_document_ids
 
-                db_update = link_document_ids(posted)
+                db_update = link_document_ids(posted, org_id=org_id)
             except Exception as e:
                 logger.error(f"[BANK POST] documentid update failed: {e}")
                 db_update = {"error": str(e)}
@@ -1036,6 +1044,7 @@ def process_request(
             match_by=match_by,
             update_db=update_db,
             company_code=company_code,
+            org_id=org_id,
         )
 
     res = process_bank_posting(

@@ -3,9 +3,6 @@
   "tenant_id": "DM00005",
   "file_path": "AR Inbox Post ERP/OM0000000001/invoice_fb70_sample.xlsx",
   "sheet": "FB70_Upload",
-  "company_code": "DAT1",
-  "gl_account": "40400000",
-  "tax_code": "",
   "dry_run": true,
   "update_db": true
 }

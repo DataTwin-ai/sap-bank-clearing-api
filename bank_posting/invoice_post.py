@@ -34,8 +34,10 @@ from bank_posting.posting import (
     load_bank_config,
     load_sheet_rows,
     logger,
+    org_settings,
     parse_amount,
     parse_date,
+    sap_customer_for,
 )
 from db_manager import get_db_credentials
 
@@ -131,8 +133,11 @@ def validate_invoice_post(item: Dict[str, Any]) -> List[str]:
 # ---------------------------------------------------------------------------
 # Database: active_bt3i
 # ---------------------------------------------------------------------------
-def bt3i_document_ids(org_id: str, refs: List[str], env: Optional[str] = None) -> Dict[str, List[str]]:
-    """documentnumber (upper-cased) -> documentids already set ([] = row exists, no documentid yet)."""
+def bt3i_invoice_info(org_id: str, refs: List[str], env: Optional[str] = None) -> Dict[str, Dict[str, List[str]]]:
+    """
+    documentnumber (upper-cased) -> {"ids": documentids already set, "names": sendernames}.
+    A missing key means there is no active_bt3i invoice row for that number.
+    """
     if not refs:
         return {}
     c = get_db_credentials(env)
@@ -142,15 +147,21 @@ def bt3i_document_ids(org_id: str, refs: List[str], env: Optional[str] = None) -
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT upper(trim(documentnumber)), "
-                "       array_remove(array_agg(DISTINCT nullif(trim(documentid), '')), NULL) "
+                "       array_remove(array_agg(DISTINCT nullif(trim(documentid), '')), NULL), "
+                "       array_remove(array_agg(DISTINCT nullif(trim(sendername), '')), NULL) "
                 "FROM public.active_bt3i "
                 "WHERE orgid = %s AND transactiontype = 'Invoice' AND upper(trim(documentnumber)) = ANY(%s) "
                 "GROUP BY 1",
                 (org_id, [r.upper() for r in refs]),
             )
-            return {r[0]: list(r[1] or []) for r in cur.fetchall()}
+            return {r[0]: {"ids": list(r[1] or []), "names": list(r[2] or [])} for r in cur.fetchall()}
     finally:
         conn.close()
+
+
+def bt3i_document_ids(org_id: str, refs: List[str], env: Optional[str] = None) -> Dict[str, List[str]]:
+    """documentnumber (upper-cased) -> documentids already set ([] = row exists, no documentid yet)."""
+    return {k: v["ids"] for k, v in bt3i_invoice_info(org_id, refs, env).items()}
 
 
 # ---------------------------------------------------------------------------
@@ -204,8 +215,12 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
     org_id = _text(payload.get("org_id"))
     if not org_id:
         raise ValueError("org_id is required")
-    defaults = {k: payload.get(k) for k in ("company_code", "customer", "gl_account", "tax_code", "currency",
-                                            "doc_date", "posting_date", "baseline_date", "period", "doc_type")}
+    # request value > config.ini [org:<org_id>] (item / Excel values win over both, see normalise)
+    org = org_settings(org_id)
+    defaults = {k: payload.get(k) if not _blank(payload.get(k)) else org.get(k)
+                for k in ("company_code", "customer", "gl_account", "tax_code", "currency",
+                          "doc_date", "posting_date", "baseline_date", "period", "doc_type")}
+    from_config = sorted(k for k in defaults if _blank(payload.get(k)) and org.get(k))
 
     started = datetime.now()
     batch_id = f"INP{started:%Y%m%d%H%M%S}-{uuid.uuid4().hex[:4].upper()}"
@@ -227,19 +242,42 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
     logger.info(f"{log}: start, org {org_id}, {len(raw_items)} item(s) from {source}, "
                 f"dry_run={dry_run}, update_db={update_db}")
 
+    if from_config:
+        logger.info(f"{log}: from config [org:{org_id}]: " + ", ".join(f"{k}={org[k]}" for k in from_config))
+
     items = [normalise_invoice_post({**r, "row": r.get("row", n)}, defaults, cfg)
              for n, r in enumerate(raw_items, start=1)]
+
+    try:
+        bt3i = bt3i_invoice_info(org_id, [i["invoice_ref"] for i in items if i["invoice_ref"]])
+    except Exception as e:
+        raise RuntimeError(f"Could not read active_bt3i: {e}") from e
+    linked_ids = {k: v["ids"] for k, v in bt3i.items()}
+
+    # SAP customer from config.ini [customers:<org_id>] via the invoice's customer name in active_bt3i
+    for i in items:
+        i["customer_note"] = None
+        if i["customer"] or not i["invoice_ref"]:
+            continue
+        names = bt3i.get(i["invoice_ref"].upper(), {}).get("names", [])
+        if len(names) == 1:
+            sap_no = sap_customer_for(org_id, names[0])
+            if sap_no:
+                i["customer"] = alpha(sap_no)
+                i["customer_note"] = f"SAP customer {i['customer']} from config [customers:{org_id}] for '{names[0]}'"
+            else:
+                i["customer_note"] = (f"No SAP customer for '{names[0]}': add '{names[0]} = <SAP customer>' "
+                                      f"under [customers:{org_id}] in config.ini, or send 'customer'")
+        elif len(names) > 1:
+            i["customer_note"] = f"Invoice has several customer names in active_bt3i ({', '.join(names)}): send 'customer'"
+
     for i in items:
         logger.info(
             f"{log} row {i['row']} input: ref={i['invoice_ref']} company={i['company_code']} "
-            f"customer={i['customer']} amount={i['amount']} {i['currency']} gl={i['gl_account']} "
+            f"customer={i['customer'] or '-'} amount={i['amount']} {i['currency']} gl={i['gl_account']} "
             f"tax={i['tax_code'] or '-'} doc_date={i['doc_date']} posting_date={i['posting_date']} type={i['doc_type']}"
+            + (f" | {i['customer_note']}" if i["customer_note"] else "")
         )
-
-    try:
-        linked_ids = bt3i_document_ids(org_id, [i["invoice_ref"] for i in items if i["invoice_ref"]])
-    except Exception as e:
-        raise RuntimeError(f"Could not read active_bt3i: {e}") from e
 
     results: List[Dict[str, Any]] = []
     todo: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
@@ -248,6 +286,9 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
 
     for item in items:
         errs = validate_invoice_post(item)
+        if not item["customer"] and item["customer_note"]:
+            errs = [e if not e.startswith("customer (SAP customer number) is missing") else
+                    f"customer (SAP customer number) is missing. {item['customer_note']}" for e in errs]
         warns: List[str] = []
         key = (item["company_code"], item["invoice_ref"].upper())
         if not errs and key in seen:
@@ -273,7 +314,8 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
             "status": "INVALID",
             "invoice_ref": item["invoice_ref"],
             "company_code": item["company_code"],
-            "customer": item["customer"],
+            "customer": item["customer"] or None,
+            **({"customer_from": item["customer_note"]} if item["customer"] and item["customer_note"] else {}),
             "gl_account": item["gl_account"],
             "tax_code": item["tax_code"] or None,
             "amount": float(item["amount"]) if item["amount"] is not None else None,
@@ -378,6 +420,7 @@ def process_invoice_post(payload: Dict[str, Any], dry_run: bool = False, update_
         "dry_run": dry_run,
         "org_id": org_id,
         "source": source,
+        "from_config": {k: org[k] for k in from_config},
         "sap_posting": sap_status,
         "total": len(results),
         "summary": counts,

@@ -38,10 +38,13 @@ from bank_posting.posting import (
     _text,
     alpha,
     configured_sap_tables,
+    is_true,
     load_bank_config,
     logger,
+    org_settings,
     parse_amount,
     parse_date,
+    sap_customer_for,
 )
 from db_manager import get_db_credentials
 
@@ -80,7 +83,7 @@ def read_connection(org_id: str, connection_id: str, column: str,
             )
             has_col = cur.fetchone() is not None
             q = sql.SQL(
-                "SELECT source, sno, connectingdocumentnumber, documentvalue, documentstatus, {col} "
+                "SELECT source, sno, connectingdocumentnumber, documentvalue, documentstatus, {col}, customername "
                 "FROM {tbl} WHERE orgid = %s AND documentid = %s "
                 "ORDER BY source DESC, length(sno), sno"
             ).format(
@@ -90,7 +93,8 @@ def read_connection(org_id: str, connection_id: str, column: str,
             cur.execute(q, (org_id, connection_id))
             rows = [
                 {"source": r[0], "sno": r[1], "ref": _text(r[2]),
-                 "amount": parse_amount(r[3]), "status": r[4], "clearing_doc": _text(r[5])}
+                 "amount": parse_amount(r[3]), "status": r[4], "clearing_doc": _text(r[5]),
+                 "customer_name": " ".join(_text(r[6]).split())}
                 for r in cur.fetchall()
             ]
     finally:
@@ -101,6 +105,7 @@ def read_connection(org_id: str, connection_id: str, column: str,
         "invoices": [r for r in rows if (r["source"] or "").lower() == "invoice"],
         "bank": [r for r in rows if (r["source"] or "").lower() == "bank"],
         "cleared_by": sorted({r["clearing_doc"] for r in rows if r["clearing_doc"]}),
+        "customer_names": sorted({r["customer_name"] for r in rows if r["customer_name"]}),
     }
 
 
@@ -130,22 +135,31 @@ def write_clearing_doc(org_id: str, connection_id: str, clearing_doc: str, colum
 # ---------------------------------------------------------------------------
 # Request -> item
 # ---------------------------------------------------------------------------
-def normalise_clearing(p: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+def normalise_clearing(p: Dict[str, Any], cfg: Dict[str, Any], org: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Request values; company code, customer, bank G/L, currency, document type fall back to [org:<org_id>]."""
+    org = org or {}
+
+    def pick(k: str) -> Any:
+        return p.get(k) if not _blank(p.get(k)) else org.get(k)
+
     posting = parse_date(p.get("posting_date"))
     doc_raw = p.get("doc_date") if not _blank(p.get("doc_date")) else p.get("posting_date")
+    # bank G/Ls with field status "value date required" (e.g. G005): value_date_required = true in [org:..]
+    value_raw = p.get("value_date") if not _blank(p.get("value_date")) else (
+        p.get("posting_date") if is_true(org.get("value_date_required")) else None)
     return {
         "org_id": _text(p.get("org_id")),
         "connection_id": _text(p.get("connection_id")),
-        "company_code": _text(p.get("company_code")).upper(),
-        "customer": alpha(p.get("customer")),
-        "bank_gl": alpha(p.get("bank_gl")),
-        "currency": _text(p.get("currency")).upper(),
+        "company_code": _text(pick("company_code")).upper(),
+        "customer": alpha(pick("customer")),
+        "bank_gl": alpha(pick("bank_gl")),
+        "currency": _text(pick("currency")).upper(),
         "posting_date_raw": p.get("posting_date"),
         "posting_date": posting,
         "doc_date_raw": doc_raw,
         "doc_date": parse_date(doc_raw),
-        "value_date": parse_date(p.get("value_date")),
-        "doc_type": _text(p.get("doc_type")).upper() or cfg["default_doc_type"],
+        "value_date": parse_date(value_raw),
+        "doc_type": _text(pick("doc_type")).upper() or cfg["default_doc_type"],
         "period": _text(p.get("period")),
         "amount_raw": p.get("amount"),
         "amount": parse_amount(p.get("amount")),
@@ -372,7 +386,12 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
     if match_by not in MATCH_FIELDS:
         raise ValueError(f"match_by must be one of {MATCH_FIELDS}")
 
-    item = normalise_clearing(payload, cfg)
+    org = org_settings(_text(payload.get("org_id")))
+    from_config = sorted(k for k in ("company_code", "customer", "bank_gl", "currency", "doc_type")
+                         if _blank(payload.get(k)) and org.get(k))
+    if _blank(payload.get("value_date")) and is_true(org.get("value_date_required")):
+        from_config.append("value_date (= posting_date)")
+    item = normalise_clearing(payload, cfg, org)
     if not item["org_id"] or not item["connection_id"]:
         raise ValueError("org_id and connection_id (active_cnx.documentid) are required")
 
@@ -393,11 +412,31 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
         logger.exception(f"{log}: could not read {CNX_TABLE}: {e}")
         raise RuntimeError(f"Could not read {CNX_TABLE}: {e}") from e
     logger.info(f"{log}: connection rows={len(cnx['rows'])} (invoice {len(cnx['invoices'])}, bank {len(cnx['bank'])}), "
-                f"{column} exists={cnx['column_exists']}, already cleared by={cnx['cleared_by'] or '-'}")
+                f"{column} exists={cnx['column_exists']}, already cleared by={cnx['cleared_by'] or '-'}, "
+                f"customer names={cnx['customer_names'] or '-'}")
+    if from_config:
+        logger.info(f"{log}: from config [org:{item['org_id']}]: {', '.join(from_config)}")
 
     errs: List[str] = []
     warnings: List[str] = []
     filled: List[str] = []
+    customer_from: Optional[str] = None
+
+    # SAP customer: request > [org:..] customer > [customers:..] mapping of the connection's customer name
+    if not item["customer"] and cnx["rows"]:
+        names = cnx["customer_names"]
+        if len(names) == 1:
+            sap_no = sap_customer_for(item["org_id"], names[0])
+            if sap_no:
+                item["customer"] = alpha(sap_no)
+                customer_from = f"config [customers:{item['org_id']}] '{names[0]}' = {item['customer']}"
+                logger.info(f"{log}: customer {item['customer']} from {customer_from}")
+            else:
+                errs.append(f"No SAP customer for '{names[0]}': add '{names[0]} = <SAP customer>' under "
+                            f"[customers:{item['org_id']}] in config.ini, or send 'customer'")
+        elif len(names) > 1:
+            errs.append(f"Connection has several customer names ({', '.join(names)}): send 'customer'")
+
     if not cnx["rows"]:
         errs.append(f"Connection '{item['connection_id']}' not found in {CNX_TABLE} for org {item['org_id']}")
     else:
@@ -501,12 +540,15 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
         "amount": float(item["amount"]) if item["amount"] is not None else None,
         "utr": item["utr"] or None,
         "posting_date": item["posting_date"].isoformat() if item["posting_date"] else None,
+        "value_date": item["value_date"].isoformat() if item["value_date"] else None,
         "invoices": [
             {k: v for k, v in {**inv, "amount": float(inv["amount"]) if inv["amount"] is not None else None}.items()
              if k != "amount_raw"}
             for inv in item["invoices"]
         ],
         "filled_from_connection": filled,
+        "from_config": from_config,
+        **({"customer_from": customer_from} if customer_from else {}),
         "connection": {
             "rows": len(cnx["rows"]),
             "invoice_rows": len(cnx["invoices"]),

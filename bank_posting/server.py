@@ -404,7 +404,7 @@ _CLEARING_EXAMPLE = {
     "connection_id": "25677/20261117/30000",
     "company_code": "DAT1",
     "customer": "30000001",
-    "bank_gl": "24500000",
+    "bank_gl": "24520000",
     "currency": "INR",
     "posting_date": "2026-11-17",
     "amount": 30000.0,

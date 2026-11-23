@@ -10,11 +10,12 @@
       "company_code": "DAT1",
       "currency": "INR",
       "customer": "30000001",
-      "bank_gl": "24500000",
-      "amount": 10000.00,
+      "bank_gl": "24520000",
+      "amount": 10000.0,
       "invoice_ref": "1800000000",
       "utr": "UTR0001",
-      "item_text": "Bank receipt"
+      "item_text": "Bank receipt",
+      "value_date": "2026-11-23"
     }
   ]
 }

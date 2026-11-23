@@ -16,6 +16,29 @@ Every call needs the header `X-API-Key: <key>`. Swagger: `<base URL>/docs`.
 Always call with `"dry_run": true` first. A dry run runs every check (step 1 also runs an SAP
 simulation), posts nothing and writes nothing.
 
+### SAP values from config.ini
+
+AR Inbox does not have to send SAP company code, G/L accounts or SAP customer numbers. They are set once per
+organisation in `config.ini` (on the server: SSM `/sap-bank-clearing-api/config.ini`):
+
+```ini
+[org:OM0000000001]
+company_code = DAT1
+currency = INR
+gl_account = 40400000          ; revenue G/L (invoice posting)
+tax_code =                     ; empty = no tax
+bank_gl = 24520000             ; bank G/L (clearing): Balances with scheduled banks - Curr accounts
+value_date_required = true     ; 24520000 (field status G005) needs a value date: value_date = posting_date
+
+[customers:OM0000000001]
+; DataTwin customer name (active_bt3i.sendername / active_cnx.customername) = SAP customer number
+TEST Customer_02 TEST02 = 30000001
+```
+
+Order: request value > Excel column (invoice files) > `[org:…]` / `[customers:…]`. The response shows what was taken
+from config in `from_config` (and `customer_from`). A customer name with no entry in `[customers:…]` returns INVALID
+with the line to add.
+
 ---
 
 ## 1. Invoice: post in SAP, store the document number
@@ -53,13 +76,13 @@ once at request level or per item (the item value wins).
 | `org_id` | yes | `active_bt3i.orgid` |
 | `items[].invoice_ref` | yes | DataTwin invoice number = `active_bt3i.documentnumber`. Up to 25 characters (see below) |
 | `items[].amount` | yes | Gross amount |
-| `customer` | yes | **SAP** customer number (not the DataTwin customer name) |
-| `company_code` | yes | SAP company code |
-| `gl_account` | yes | Revenue G/L account |
-| `currency` | yes | Currency |
+| `customer` | yes | **SAP** customer number. Default: `[customers:…]` by the invoice's `active_bt3i.sendername` |
+| `company_code` | yes | SAP company code. Default: `[org:…]` |
+| `gl_account` | yes | Revenue G/L account. Default: `[org:…]` |
+| `currency` | yes | Currency. Default: `[org:…]` |
 | `doc_date` | yes | Invoice date `YYYY-MM-DD` |
 | `posting_date` | no | Default `doc_date`. The SAP period must be open: send today's date for old invoices (a doc date of 2026-03-15 falls in the closed period 012/2025) |
-| `tax_code` | no | SAP tax code. Empty = no tax. When set, SAP calculates the tax out of the gross amount |
+| `tax_code` | no | SAP tax code (default `[org:…]`). Empty = no tax. When set, SAP calculates the tax out of the gross amount |
 | `item_text` | no | Line text (50 characters) |
 | `baseline_date`, `period`, `doc_type` | no | Defaults: from payment terms, from posting date, `DR` |
 | `dry_run` | no | Default `false` |
@@ -173,16 +196,13 @@ POST /api/clearing/post
 {
   "org_id": "OM0000000001",
   "connection_id": "5677/20260703/1110380",
-  "company_code": "DAT1",
-  "customer": "30000001",
-  "bank_gl": "24500000",
-  "currency": "INR",
   "posting_date": "2026-11-23",
   "dry_run": true
 }
 ```
 
-The API takes from `active_cnx`:
+From `config.ini`: company code, currency, bank G/L, value date (`[org:…]`) and the SAP customer
+(`[customers:…]`, by the connection's `customername`). The API takes from `active_cnx`:
 - invoices: the invoice rows (`connectingdocumentnumber`, `documentvalue`); each number is replaced by its SAP
   document number from `active_bt3i.documentid` (`match_by` = `BELNR`, the default);
 - amount and UTR: the bank row (`documentvalue`, `connectingdocumentnumber`).
@@ -198,9 +218,10 @@ DataTwin number next to the SAP number.
   "connection_id": "25677/20261117/30000",
   "company_code": "DAT1",
   "customer": "30000001",
-  "bank_gl": "24500000",
+  "bank_gl": "24520000",
   "currency": "INR",
   "posting_date": "2026-11-23",
+  "value_date": "2026-11-23",
   "amount": 11000,
   "utr": "TESTUTR0001",
   "match_by": "BELNR",
@@ -219,10 +240,10 @@ DataTwin number next to the SAP number.
 |---|---|---|---|
 | `org_id` | yes | | `active_cnx.orgid` |
 | `connection_id` | yes | | `active_cnx.documentid` |
-| `company_code` | yes | | SAP company code |
-| `customer` | yes | | SAP customer number. All invoices must belong to this customer |
-| `bank_gl` | yes | | Bank G/L account (debit line, posting key 40) |
-| `currency` | yes | | Currency of the receipt and of every invoice |
+| `company_code` | yes | `[org:…]` | SAP company code |
+| `customer` | yes | `[customers:…]` by connection `customername` | SAP customer number. All invoices must belong to this customer |
+| `bank_gl` | yes | `[org:…]` | Bank G/L account (debit line, posting key 40) |
+| `currency` | yes | `[org:…]` | Currency of the receipt and of every invoice |
 | `posting_date` | yes | | `YYYY-MM-DD`. The SAP period must be open |
 | `doc_date` | no | `posting_date` | Document date |
 | `amount` | no | bank row | Receipt amount. Must equal the sum of `invoices[].amount` |
@@ -231,7 +252,8 @@ DataTwin number next to the SAP number.
 | `match_by` | no | `BELNR` | SAP field that holds `invoice_ref`: `BELNR` (SAP document number), `XBLNR` or `ZUONR` |
 | `item_text` | no | `<connection_id> <utr>` | Text on the bank line |
 | `doc_type` | no | `DZ` | SAP document type |
-| `period`, `value_date` | no | | Only if needed |
+| `value_date` | no | `posting_date` if `value_date_required = true` | Required by bank G/Ls with field status G005 (24520000); must be left out for G001 (24500000) |
+| `period` | no | | Only if needed |
 | `dry_run` | no | `false` | `true` = check only |
 | `update_db` | no | `true` | Write the clearing document to `active_cnx` |
 
@@ -252,7 +274,7 @@ One FB05 document (incoming payment):
 
 | Line | Posting key | Account | Amount |
 |---|---|---|---|
-| 1 | 40 | Bank G/L 24500000 | Dr 11,000 |
+| 1 | 40 | Bank G/L 24520000 | Dr 11,000 |
 | 2 | 15 (generated) | Customer 30000001 | Cr 11,000, clears 1800000000 and 1800000002 |
 
 The posting document is also the clearing document (`AUGBL` of every invoice).
@@ -342,7 +364,7 @@ ZUONR_2 (UTR), SGTXT_1 / SGTXT_2. The same with JSON `items`:
   "dry_run": true,
   "items": [
     { "doc_date": "2026-11-23", "posting_date": "2026-11-23", "company_code": "DAT1", "currency": "INR",
-      "customer": "30000001", "bank_gl": "24500000", "amount": 10000.00,
+      "customer": "30000001", "bank_gl": "24520000", "value_date": "2026-11-23", "amount": 10000.00,
       "invoice_ref": "1800000000", "utr": "UTR0001", "item_text": "Bank receipt" }
   ]
 }

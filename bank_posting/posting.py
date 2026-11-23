@@ -96,6 +96,48 @@ def load_bank_config() -> Dict[str, str]:
     }
 
 
+def _plain_config() -> configparser.ConfigParser:
+    """config.ini without interpolation (customer names may contain %); keys: lower case, single spaces."""
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.optionxform = lambda s: " ".join(str(s).split()).lower()  # type: ignore[method-assign]
+    cfg.read(CONFIG_PATH, encoding="utf-8")
+    return cfg
+
+
+def _org_section(cfg: configparser.ConfigParser, prefix: str, org_id: Optional[str]) -> Optional[str]:
+    want = f"{prefix}:{(org_id or '').strip()}".lower()
+    return next((s for s in cfg.sections() if s.strip().lower() == want), None) if org_id else None
+
+
+def org_settings(org_id: Optional[str]) -> Dict[str, str]:
+    """
+    [org:<org_id>] in config.ini: SAP values for one organisation, used when the request
+    (and the Excel file) leave them out. Keys: company_code, currency, customer, gl_account,
+    tax_code, doc_type, bank_gl, value_date_required.
+    """
+    cfg = _plain_config()
+    sec = _org_section(cfg, "org", org_id)
+    return {k: v.strip() for k, v in cfg[sec].items() if v.strip()} if sec else {}
+
+
+def sap_customer_for(org_id: Optional[str], name: Optional[str]) -> Optional[str]:
+    """
+    [customers:<org_id>] in config.ini: DataTwin customer name (active_bt3i.sendername /
+    active_cnx.customername) = SAP customer number. Case and extra spaces are ignored.
+    """
+    key = " ".join(str(name or "").split()).lower()
+    if not key:
+        return None
+    cfg = _plain_config()
+    sec = _org_section(cfg, "customers", org_id)
+    value = cfg[sec].get(key, "").strip() if sec else ""
+    return value or None
+
+
+def is_true(value: Any) -> bool:
+    return str(value or "").strip().lower() in ("true", "1", "yes", "x", "on")
+
+
 # SAP tables the validation can use. List them in [sap] tables (config.ini).
 # BSID is always read; each other table adds its check when listed.
 SAP_TABLE_RULES = {

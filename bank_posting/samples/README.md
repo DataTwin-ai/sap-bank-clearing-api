@@ -8,7 +8,7 @@ simulation) and post nothing. Set `"dry_run": false` only when you want a real S
 | [invoice_post.json](invoice_post.json) | `POST /api/invoice/post` | New customer invoice in SAP, number → `active_bt3i.documentid` |
 | [invoice_post_s3.json](invoice_post_s3.json) | `POST /api/invoice/post` | Same, from an FB70 Excel in the tenant S3 bucket (upload [invoice_fb70_sample.xlsx](invoice_fb70_sample.xlsx) to that key first) |
 | [invoice_link_existing.json](invoice_link_existing.json) | `POST /api/bank/post` | Invoice already in SAP: find it, number → `active_bt3i.documentid` |
-| [clearing_minimal.json](clearing_minimal.json) | `POST /api/clearing/post` | Clear a connection; invoices, amount, UTR come from `active_cnx` |
+| [clearing_minimal.json](clearing_minimal.json) | `POST /api/clearing/post` | Clear a connection: invoices, amount, UTR from `active_cnx`; company code, bank G/L, value date, SAP customer from `config.ini` |
 | [clearing_explicit.json](clearing_explicit.json) | `POST /api/clearing/post` | Clear a connection with the invoices given in the request |
 | [bank_file.json](bank_file.json) | `POST /api/bank/post` | Bank Excel from the tenant S3 bucket (one invoice per row) |
 | [bank_items.json](bank_items.json) | `POST /api/bank/post` | Same as JSON items (one receipt clears one invoice) |

@@ -138,6 +138,67 @@ def is_true(value: Any) -> bool:
     return str(value or "").strip().lower() in ("true", "1", "yes", "x", "on")
 
 
+# Values that belong to an SAP company code: [company:<bukrs>] in config.ini
+COMPANY_KEYS = ("currency", "gl_account", "tax_code", "doc_type", "bank_gl",
+                "house_bank", "house_bank_account", "value_date_required")
+
+
+def company_settings(bukrs: Optional[str]) -> Dict[str, str]:
+    """[company:<bukrs>] in config.ini: bank G/L, house bank, revenue G/L, tax code ... of one company code."""
+    cfg = _plain_config()
+    sec = _org_section(cfg, "company", (bukrs or "").strip().upper())
+    return {k: v.strip() for k, v in cfg[sec].items() if v.strip()} if sec else {}
+
+
+def sap_defaults(org_id: Optional[str], bukrs: Optional[str]) -> Dict[str, str]:
+    """
+    Fallback values for one row, used only where the request / Excel leave a field empty:
+      company_code (and customer) from [org:<org_id>];
+      company keys from [company:<bukrs>], else from [org:<org_id>] when that org's
+      company_code is this company (an org can have items in several company codes).
+    """
+    org = org_settings(org_id)
+    org_company = org.get("company_code", "").strip().upper()
+    bukrs = (bukrs or org_company or "").strip().upper()
+    out = {k: v for k, v in org.items() if k not in COMPANY_KEYS}
+    if not org_company or org_company == bukrs:
+        out.update({k: v for k, v in org.items() if k in COMPANY_KEYS})
+    out.update({k: v for k, v in company_settings(bukrs).items() if k in COMPANY_KEYS})
+    return out
+
+
+def db_company_codes(org_id: Optional[str], refs: List[str], env: Optional[str] = None) -> Dict[str, List[str]]:
+    """
+    Company codes stored with these document numbers in DataTwin (SAP extraction fills bukrs):
+    active_bt3i.documentnumber, active_bt3h.documentnumber / documentref. Key: upper-cased number.
+    """
+    refs = sorted({r.strip().upper() for r in refs if r and r.strip()})
+    if not refs or not org_id:
+        return {}
+    import psycopg2
+    from db_manager import get_db_credentials
+
+    c = get_db_credentials(env)
+    conn = psycopg2.connect(host=c["host"], port=c["port"], user=c["user"],
+                            password=c["password"], dbname=c["database"])
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ref, array_agg(DISTINCT b) FROM ("
+                "  SELECT upper(trim(documentnumber)) AS ref, nullif(trim(bukrs::text), '') AS b"
+                "    FROM public.active_bt3i WHERE orgid = %s AND upper(trim(documentnumber)) = ANY(%s)"
+                "  UNION ALL SELECT upper(trim(documentnumber)), nullif(trim(bukrs::text), '')"
+                "    FROM public.active_bt3h WHERE orgid = %s AND upper(trim(documentnumber)) = ANY(%s)"
+                "  UNION ALL SELECT upper(trim(documentref)), nullif(trim(bukrs::text), '')"
+                "    FROM public.active_bt3h WHERE orgid = %s AND upper(trim(documentref)) = ANY(%s)"
+                ") x WHERE b IS NOT NULL GROUP BY ref",
+                (org_id, refs) * 3,
+            )
+            return {r[0]: sorted(r[1]) for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 # SAP tables the validation can use. List them in [sap] tables (config.ini).
 # BSID is always read; each other table adds its check when listed.
 SAP_TABLE_RULES = {
@@ -700,6 +761,53 @@ class OpenItemIndex:
         rows = [r for r in self.cleared if str(r.get("shkzg")) == "S"]
         return self._match(rows, bukrs, kunnr, field, value)
 
+    def locate(self, field: str, value: str, kunnr: Optional[str] = None) -> Dict[Tuple[str, str], Dict[str, Any]]:
+        """Open invoice lines (BSID, debit) with this reference in ANY company code:
+        (bukrs, kunnr) -> {"amount": open amount, "currency": {...}}."""
+        key = field.lower()
+        val = alpha(value) if field == "BELNR" else str(value or "").strip().upper()
+        out: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        if not val:
+            return out
+        for r in self.rows:
+            if str(r.get("shkzg")) != "S":
+                continue
+            k = alpha(r.get("kunnr"))
+            if kunnr and k != kunnr:
+                continue
+            cand = alpha(r.get(key)) if field == "BELNR" else str(r.get(key) or "").strip().upper()
+            if cand and cand == val:
+                e = out.setdefault((str(r.get("bukrs", "")).upper(), k), {"amount": Decimal("0"), "currency": set()})
+                e["amount"] += Decimal(str(r.get("wrbtr") or 0))
+                e["currency"].add(str(r.get("waers", "")).upper())
+        return out
+
+
+def resolve_company(
+    index: OpenItemIndex, invoices: List[Tuple[str, Optional[Decimal]]], match_by: str,
+    kunnr: Optional[str] = None, bukrs: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    The one SAP company code (and customer) where every invoice is open with its amount.
+    kunnr / bukrs narrow the search when already known.
+    Returns (bukrs, kunnr, note); bukrs is None when no company or more than one fits.
+    """
+    candidates: Optional[set] = None
+    for ref, amount in invoices:
+        found = index.locate(match_by, ref, kunnr)
+        fits = {p for p, e in found.items()
+                if (not bukrs or p[0] == bukrs)
+                and (amount is None or e["amount"].quantize(Decimal("0.01")) == amount)}
+        candidates = fits if candidates is None else candidates & fits
+    candidates = candidates or set()
+    if len(candidates) == 1:
+        b, k = next(iter(candidates))
+        return b, k, f"open in SAP company {b}, customer {k}"
+    if not candidates:
+        return None, None, None
+    return None, None, ("open in several SAP company codes ("
+                        + ", ".join(f"{b} / {k}" for b, k in sorted(candidates)) + "): send company_code")
+
 
 def check_open_items(
     item: Dict[str, Any], index: OpenItemIndex, match_by: str
@@ -732,9 +840,13 @@ def check_open_items(
                     {"belnr": b, "gjahr": y, "augbl": c, "augdt": d} for b, y, c, d in docs
                 ]
             }
+        elsewhere = index.locate(match_by, item["invoice_ref"])
+        hint = ("; this reference is open in SAP for " + ", ".join(
+            f"company {b} / customer {k} ({e['amount']} {'/'.join(sorted(e['currency']))})"
+            for (b, k), e in sorted(elsewhere.items()))) if elsewhere else ""
         errs.append(
             f"No open item in SAP for company {item['company_code']}, customer {item['customer']} "
-            f"with {match_by} = '{item['invoice_ref']}'"
+            f"with {match_by} = '{item['invoice_ref']}'{hint}"
         )
         return errs, {}
 
@@ -937,20 +1049,54 @@ def process_bank_posting(
     prepared: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     seen = set()
 
-    # request / Excel value > config.ini [org:<org_id>] (company code, currency, bank G/L, house bank)
-    org = org_settings(org_id)
+    # Company code: row (request / Excel) > SAP open item of the invoice (same amount)
+    #   > DataTwin table (bukrs from SAP extraction) > config.ini [org:<org_id>].
+    # SAP comes before the DataTwin table: document numbers repeat across company codes
+    # (1800000003 is in 01AB, ITC3 and SGG1), and only SAP knows which one is open with this amount.
+    # Then bank G/L, house bank, currency, value date: row > [company:<bukrs>] > [org:<org_id>].
+    need_db = [_text(r.get("invoice_ref")) for r in raw_items
+               if _blank(r.get("company_code")) and not _blank(r.get("invoice_ref"))]
+    db_codes: Dict[str, List[str]] = {}
+    if need_db:
+        try:
+            db_codes = db_company_codes(org_id, need_db)
+        except Exception as e:
+            logger.warning(f"[BANK POST] {batch_id}: company code lookup in DataTwin tables failed: {e}")
     from_config: List[str] = []
     for raw in raw_items:
         raw = dict(raw)
+        resolved: List[str] = []
+        ref = _text(raw.get("invoice_ref"))
+        if _blank(raw.get("company_code")) and ref:
+            b = k = note = None
+            if index is not None:
+                b, k, note = resolve_company(index, [(ref, parse_amount(raw.get("amount")))], match_by,
+                                             alpha(raw.get("customer")) or None)
+            if b:
+                raw["company_code"] = b
+                resolved.append(f"company code {b} from SAP ({note})")
+                if _blank(raw.get("customer")) and k:
+                    raw["customer"] = k
+                    resolved.append(f"customer {k} from SAP")
+            else:
+                codes = db_codes.get(ref.upper(), [])
+                if len(codes) == 1:
+                    raw["company_code"] = codes[0]
+                    resolved.append(f"company code {codes[0]} from DataTwin table (not open in SAP)")
+                elif note:
+                    resolved.append(note)
+        defaults = sap_defaults(org_id, _text(raw.get("company_code")))
         for k in BANK_ORG_KEYS:
-            if _blank(raw.get(k)) and org.get(k):
-                raw[k] = org[k]
+            if _blank(raw.get(k)) and defaults.get(k):
+                raw[k] = defaults[k]
                 if k not in from_config:
                     from_config.append(k)
-        if _blank(raw.get("value_date")) and is_true(org.get("value_date_required")):
+        if _blank(raw.get("value_date")) and is_true(defaults.get("value_date_required")):
             raw["value_date"] = raw.get("posting_date")
             if "value_date (= posting_date)" not in from_config:
                 from_config.append("value_date (= posting_date)")
+        if resolved:
+            logger.info(f"[BANK POST] {batch_id} row {raw.get('row')}: " + "; ".join(resolved))
         item = normalise(raw, cfg)
         errs = validate(item)
         key = (item["company_code"], item["customer"], item["invoice_ref"].upper())
@@ -986,6 +1132,8 @@ def process_bank_posting(
                 f"UTR '{item['utr']}' is longer than 16 characters: not sent as SAP reference (XBLNR), "
                 f"SAP's duplicate check by UTR is skipped; active_bs is still linked by this UTR"
             ]
+        if resolved:
+            res["resolved"] = resolved
         results.append(res)
         if not errs:
             prepared.append((item, res))

@@ -16,28 +16,50 @@ Every call needs the header `X-API-Key: <key>`. Swagger: `<base URL>/docs`.
 Always call with `"dry_run": true` first. A dry run runs every check (step 1 also runs an SAP
 simulation), posts nothing and writes nothing.
 
-### SAP values from config.ini
+### Company code, customer and SAP accounts: found by the API
 
-AR Inbox does not have to send SAP company code, G/L accounts or SAP customer numbers. They are set once per
-organisation in `config.ini` (on the server: SSM `/sap-bank-clearing-api/config.ini`):
+AR Inbox does not have to send SAP company code, customer number or G/L accounts. An organisation has items in
+several SAP company codes (OM0000000002: DPDL and 01AB), so the company code is found **per invoice**:
+
+| Value | Taken from, in this order |
+|---|---|
+| Company code + customer | 1. the request / Excel row<br>2. **SAP**: the company code and customer where the invoice is open with the same amount (bank post, clearing)<br>3. DataTwin tables: `bukrs` stored by the SAP extraction (`active_bt3i`, `active_bt3h`); for invoice posting this is the only lookup, because the invoice is not in SAP yet<br>4. `[org:<org_id>]` `company_code`; customer: `[customers:<org_id>]` by customer name |
+| Bank G/L, house bank, value date, revenue G/L, tax code, currency | 1. the request / Excel row<br>2. `[company:<company code>]`<br>3. `[org:<org_id>]` (only when the org's `company_code` is the same company) |
+
+SAP comes before the DataTwin tables because document numbers repeat across company codes (1800000003 exists in
+01AB, ITC3 and SGG1); only SAP knows which one is open with this amount. When an invoice is open in more than one
+company with the same amount, the request is INVALID and asks for `company_code`.
 
 ```ini
-[org:OM0000000001]
-company_code = DAT1
+[company:DAT1]
 currency = INR
 gl_account = 40400000          ; revenue G/L (invoice posting)
 tax_code =                     ; empty = no tax
-bank_gl = 24520000             ; bank G/L (clearing): Balances with scheduled banks - Curr accounts
-value_date_required = true     ; 24520000 (field status G005) needs a value date: value_date = posting_date
+bank_gl = 24520000             ; Balances with scheduled banks - Curr accounts (field status G005)
+value_date_required = true     ; G005 needs a value date: value_date = posting_date
+
+[company:DPDL]
+currency = INR
+bank_gl = 10601012             ; (DPDL) SBI Receipt
+house_bank = SBIDL             ; field status requires house bank + account ID
+house_bank_account = SBIM
+value_date_required = true
+
+[company:01AB]
+currency = INR
+bank_gl = 100104               ; ICICI (Inc Bank), field status G001: no value date / house bank
+
+[org:OM0000000001]
+company_code = DAT1            ; last fallback for this org
 
 [customers:OM0000000001]
 ; DataTwin customer name (active_bt3i.sendername / active_cnx.customername) = SAP customer number
 TEST Customer_02 TEST02 = 30000001
 ```
 
-Order: request value > Excel column (invoice files) > `[org:…]` / `[customers:…]`. The response shows what was taken
-from config in `from_config` (and `customer_from`). A customer name with no entry in `[customers:…]` returns INVALID
-with the line to add.
+The response shows where each value came from: `company_from`, `customer_from`, `from_config` (clearing, invoice) and
+`results[].resolved` (bank post). A wrong company code in the request gets a hint, e.g. "this reference is open in SAP
+for company 01AB / customer 0000100027 (5000.00 INR)".
 
 ---
 

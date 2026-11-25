@@ -17,16 +17,22 @@ from typing import List, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.getenv("SAP_EXTRACTION_CONFIG") or PROJECT_ROOT / "config.ini").expanduser()
+# Optional file read BEFORE config.ini (config.ini wins). Used inside the bank API container:
+# container.ini holds the non-secret sync settings ([delta], [ingestion], [paths]) and the
+# bank API's own config.ini supplies the DB / SAP connection and passwords.
+_base = os.getenv("SAP_EXTRACTION_BASE_CONFIG", "").strip()
+BASE_CONFIG_FILE = Path(_base).expanduser() if _base else None
 
 _TRUE = ("true", "1", "yes", "y", "on")
 
 
 @lru_cache(maxsize=1)
 def load_config() -> configparser.ConfigParser:
-    """Parsed config.ini; empty when the file does not exist (env vars only)."""
+    """Parsed [base config +] config.ini; empty when neither exists (env vars only)."""
     cfg = configparser.ConfigParser(interpolation=None)   # passwords may contain '%'
-    if CONFIG_FILE.exists():
-        cfg.read(CONFIG_FILE, encoding="utf-8")
+    files = [f for f in (BASE_CONFIG_FILE, CONFIG_FILE) if f is not None and f.exists()]
+    if files:
+        cfg.read(files, encoding="utf-8")
     return cfg
 
 
@@ -66,6 +72,16 @@ def split_tables(raw: str) -> List[str]:
             seen.add(name)
             out.append(name)
     return out
+
+
+def sync_org_id() -> str:
+    """
+    DataTwin org of the SAP data: used for ingestion and in every new passportid.
+    [sync] org_id (SYNC_ORG_ID) wins over [defaults] org_id (ORG_ID). Inside the bank API container
+    [defaults] org_id is the bank API's own default org, so container.ini sets [sync] org_id.
+    """
+    return (get("sync", "org_id", "SYNC_ORG_ID", "")
+            or get("defaults", "org_id", "ORG_ID", "OM0000000001"))
 
 
 def delta_tables() -> List[str]:

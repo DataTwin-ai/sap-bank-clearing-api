@@ -13,4 +13,7 @@ Dockerfile
 *.md
 bank_posting/*.html
 bank_posting/sap_abap/
-sap-extraction-api/
+sap-extraction-api/*
+!sap-extraction-api/*.py
+!sap-extraction-api/requirements.txt
+!sap-extraction-api/container.ini

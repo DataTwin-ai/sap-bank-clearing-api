@@ -8,8 +8,8 @@ It runs in two ways that share the same code:
 |---|---|---|
 | API | `uvicorn main:app` (FastAPI) | On-demand extraction, previews, Swagger at `/docs` |
 | Cron | `deploy/run_cron.sh sync` → `cli.py` | Scheduled full sync |
-
-| Delta worker | `cli.py worker` (systemd) | Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
+| Delta, in the bank API | `cli.py delta --cron`, started every minute by the sap-bank-clearing-api container (`sap_sync_scheduler.py`, settings in `container.ini`) | **Current setup.** Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
+| Delta worker | `cli.py worker` (systemd) | Same as a long-running loop on its own server; never next to the container sync |
 
 A file lock (`data/pipeline.lock`) lets only one DB-writing run happen at a time.
 If a second run starts, the API returns **409** and the cron run exits with **75**.
@@ -201,7 +201,7 @@ python cli.py check | list-tables | sap-tables --filter BS | sap-metadata BSID
 
 python cli.py delta-init BSID [--all-done]   # one time per delta table
 python cli.py worker                         # loop (systemd)
-python cli.py delta                          # one poll + one ingestion cycle (1-minute cron)
+python cli.py delta [--cron]                 # one poll + one ingestion cycle (1-minute cron: --cron)
 python cli.py delta-poll [BSID] | ingest [--no-wait] | delta-status | delta-retry BSID
 ```
 

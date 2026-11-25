@@ -85,7 +85,7 @@ def sync_bsid_to_bt3h(
     """
     creds = get_db_credentials(env)
 
-    target_org_id = org_id or settings.get("defaults", "org_id", "ORG_ID", "OM0000000001")
+    target_org_id = org_id or settings.sync_org_id()
     target_tenant_id = tenant_id or settings.get("defaults", "tenant_id", "TENANT_ID", "DM00005")
 
     logger.info(

@@ -35,7 +35,7 @@ import settings
 from context import ReserveMasterObjectIDs
 from db_manager import clean_column_name, get_active_table_name, get_db_credentials
 from logger_setup import get_logger
-from pipeline import pipeline_lock
+from pipeline import PipelineBusy, pipeline_lock
 from sap_odata_extractor import SAPODataExtractor, clean_table_name
 
 logger = get_logger("SAP_Pipeline.Delta")
@@ -80,7 +80,7 @@ def delta_settings() -> Dict[str, Any]:
         "missing_polls": max(1, settings.get_int("delta", "missing_polls_before_removed", "DELTA_MISSING_POLLS", 2)),
         "passport_prefix": settings.get("delta", "passport_prefix", "DELTA_PASSPORT_PREFIX", "PPSAP"),
         "tenant_id": settings.get("defaults", "tenant_id", "TENANT_ID", "DM00005"),
-        "org_id": settings.get("defaults", "org_id", "ORG_ID", "OM0000000001"),
+        "org_id": settings.sync_org_id(),
     }
 
 
@@ -424,6 +424,11 @@ def poll_table(sap_table: str, env: Optional[str] = None, target: Optional[str] 
         conn = _connect(env)
         try:
             cur = conn.cursor()
+            # The file lock only covers this host: a poll of the same table from another host or
+            # container (e.g. an old systemd worker next to the bank API's sync) is skipped here.
+            cur.execute("SELECT pg_try_advisory_xact_lock(hashtext(%s))", (f"sap_delta_poll:{target}",))
+            if not cur.fetchone()[0]:
+                raise PipelineBusy(f"{target} is being polled by another process")
             ensure_control_tables(cur)
             cols = table_columns(cur, target)
             if "passportid" not in cols:
@@ -484,6 +489,9 @@ def poll_table(sap_table: str, env: Optional[str] = None, target: Optional[str] 
                         last_new=len(new_items), last_changed=len(changed_items), last_removed=len(removed),
                         last_error=None)
             conn.commit()
+        except PipelineBusy:
+            conn.rollback()
+            raise
         except Exception as exc:
             conn.rollback()
             try:
@@ -526,6 +534,10 @@ def poll_all(env: Optional[str] = None) -> Dict[str, Any]:
     for t in settings.delta_tables():
         try:
             out["tables"][t] = poll_table(t, env=env)
+        except PipelineBusy:
+            # the previous poll of this table (e.g. last minute's cron run) is still running
+            logger.info(f"[DELTA] poll {t} skipped: previous poll still running")
+            out["tables"][t] = {"status": "skipped", "message": "previous poll still running"}
         except Exception as exc:
             logger.error(f"[DELTA] poll {t} failed: {exc}")
             out["tables"][t] = {"status": "failed", "error": str(exc)}

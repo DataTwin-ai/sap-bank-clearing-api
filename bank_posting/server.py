@@ -22,6 +22,7 @@ import json
 import re
 import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -496,7 +497,20 @@ class ErrorResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # FastAPI Application
 # ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 1-minute SAP -> DataTwin sync (BSID / BSAD / VBRK / VBRP), only when SAP_SYNC_ENABLED=true
+    import sap_sync_scheduler
+    try:
+        sap_sync_scheduler.start()
+    except Exception as e:  # the sync must never stop the API from starting
+        logger.error(f"SAP sync scheduler not started: {e}")
+    yield
+    sap_sync_scheduler.stop()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="SAP Bank Posting & Clearing API",
     description=(
         "API that posts bank receipts in SAP S/4HANA and clears matching customer "
@@ -627,6 +641,24 @@ async def root(request: Request):
 )
 async def health():
     return {"status": "ok", "service": "bank_posting"}
+
+
+@app.get(
+    "/api/sap-sync/status",
+    tags=["System"],
+    summary="1-minute SAP sync: alive, last poll per table, queue, last ingestion runs",
+    description=(
+        "`alive` is true when a sync run finished within the last 3 minutes. `last_run` is the latest "
+        "run (every minute); `last_run_with_data` the latest one that found or sent SAP rows. "
+        "`tables`: last poll per SAP table (BSID, BSAD, VBRK, VBRP) and rows not yet ingested. "
+        "`ingestion_runs`: the last runs sent to the ingestion API (`run_id` = the job's transaction id "
+        "in the ingestion console)."
+    ),
+    dependencies=[Depends(require_api_key)],
+)
+async def sap_sync_status(runs: int = 10):
+    import sap_sync_scheduler
+    return await run_in_threadpool(sap_sync_scheduler.status, runs)
 
 
 @app.post(

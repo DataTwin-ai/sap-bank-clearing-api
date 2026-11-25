@@ -49,6 +49,9 @@ def _cron_activity(res: dict) -> bool:
             return True
         if any(t.get(k) for k in ("new", "changed", "removed", "back_from_removed")):
             return True
+    cleared = res.get("cleared") or {}
+    if cleared.get("status") == "failed" or cleared.get("marked") or cleared.get("reopened"):
+        return True
     ing = res.get("ingestion") or {}
     return bool(ing.get("runs")) or ing.get("status") not in ("success", "disabled", "busy")
 
@@ -134,6 +137,8 @@ def main(argv=None) -> int:
             import delta
             import ingestion
             res = {"poll": delta.poll_all(env=args.env)}
+            # open invoices cleared in SAP -> marked in active_bt3h (settlementstatus / clearing doc)
+            res["cleared"] = delta.mark_cleared(env=args.env)
             try:
                 # --cron: submit / check jobs without waiting, so each run ends well within the minute
                 res["ingestion"] = ingestion.run_ingestion(env=args.env, wait=not args.cron)

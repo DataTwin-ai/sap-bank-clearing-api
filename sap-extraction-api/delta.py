@@ -529,6 +529,59 @@ def poll_table(sap_table: str, env: Optional[str] = None, target: Optional[str] 
     return res
 
 
+def mark_cleared(env: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Open invoices cleared in SAP: a BSID row that left SAP (sap_status REMOVED) and has a BSAD row
+    (same BUKRS / BELNR / GJAHR / BUZEI) is marked in its ingested row ([delta] cleared_target,
+    default active_bt3h, matched by passportid, theme [delta] cleared_theme = SAP_BSID_INV):
+        settlementstatus = 'Cleared', settlementdate = BSAD-AUGDT, reference2 = BSAD-AUGBL
+    A BSID row back in SAP (clearing reversed) loses the mark again. Runs after every poll.
+    """
+    target = settings.get("delta", "cleared_target", "DELTA_CLEARED_TARGET", "active_bt3h")
+    theme = settings.get("delta", "cleared_theme", "DELTA_CLEARED_THEME", "SAP_BSID_INV")
+    if not theme or not re.fullmatch(r"[a-z0-9_]+", target):
+        return {"status": "disabled"}
+    conn = _connect(env)
+    try:
+        cur = conn.cursor()
+        for t in ("active_bsid", "active_bsad", target):
+            if "passportid" not in table_columns(cur, t) and t != target:
+                return {"status": "skipped", "message": f"{t} is not a delta table"}
+        cur.execute(f"""UPDATE public.{q(target)} h
+                        SET settlementstatus = 'Cleared',
+                            settlementdate = CASE WHEN a.augdt ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+                                                  THEN left(a.augdt, 10)::date END,
+                            reference2 = NULLIF(TRIM(a.augbl), ''),
+                            modifieddatetime = now()
+                        FROM public.active_bsid d
+                        JOIN public.active_bsad a
+                          ON a.bukrs = d.bukrs AND a.belnr = d.belnr AND a.gjahr = d.gjahr AND a.buzei = d.buzei
+                        WHERE h.passportid = d.passportid AND h.themename = %s
+                          AND d.sap_status = 'REMOVED' AND COALESCE(TRIM(a.augbl), '') <> ''
+                          AND (h.settlementstatus IS DISTINCT FROM 'Cleared'
+                               OR h.reference2 IS DISTINCT FROM NULLIF(TRIM(a.augbl), ''))
+                        RETURNING h.documentnumber, a.augbl""", (theme,))
+        marked = cur.fetchall()
+        cur.execute(f"""UPDATE public.{q(target)} h
+                        SET settlementstatus = NULL, settlementdate = NULL, reference2 = NULL, modifieddatetime = now()
+                        FROM public.active_bsid d
+                        WHERE h.passportid = d.passportid AND h.themename = %s
+                          AND d.sap_status <> 'REMOVED' AND h.settlementstatus = 'Cleared'
+                        RETURNING h.documentnumber""", (theme,))
+        reopened = [r[0] for r in cur.fetchall()]
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.error(f"[DELTA] marking cleared invoices failed: {exc}")
+        return {"status": "failed", "error": str(exc)[:300]}
+    finally:
+        conn.close()
+    if marked or reopened:
+        logger.info(f"[DELTA] cleared in SAP: {len(marked)} invoice(s) marked "
+                    f"{[f'{d}->{c}' for d, c in marked[:10]]}; {len(reopened)} reopened {reopened[:10]}")
+    return {"status": "success", "marked": len(marked), "reopened": len(reopened)}
+
+
 def poll_all(env: Optional[str] = None) -> Dict[str, Any]:
     out: Dict[str, Any] = {"status": "success", "tables": {}}
     for t in settings.delta_tables():

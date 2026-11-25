@@ -78,6 +78,71 @@ def staging_columns(sap_table: str) -> List[Tuple[str, str]]:
     return out
 
 
+ENRICHMENTS = ("doc_ref", "customer_name", "local_currency", "zero_tds")
+
+
+def enrichments_for(sap_table: str) -> List[str]:
+    """[ingestion] enrich_bsid = doc_ref, customer_name, local_currency, zero_tds (see _enrich_staging)."""
+    t = sap_table.lower()
+    raw = settings.get("ingestion", f"enrich_{t}", f"INGESTION_ENRICH_{t.upper()}", "")
+    return [e for e in (x.strip().lower() for x in raw.replace(";", ",").split(",")) if e in ENRICHMENTS]
+
+
+def _enrich_staging(cur, sap_table: str, staging: str) -> Dict[str, Any]:
+    """
+    Adds columns the AR Inbox reads, computed from the staged SAP row, before it is sent:
+      doc_ref         invoice reference: XBLNR, else BELNR                (theme DocumentRef)
+      customer_name   KNA1-NAME1 of KUNNR (sap_ref_customer)              (theme SenderName)
+      local_currency  company code currency, T001-WAERS of BUKRS          (theme Currency / LocalCurrency)
+                      DMBTR is in this currency; WAERS is the document currency
+      tds_value, adjusted_amount = 0                                      (theme TDSValue / AdjustedAmount)
+    Returns counts for the log, e.g. {"customer_name_missing": 1}.
+    """
+    wanted = enrichments_for(sap_table)
+    if not wanted:
+        return {}
+    import reference
+    cur.execute("""SELECT column_name FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = %s""", (staging,))
+    cols = {r[0] for r in cur.fetchall()}
+    st = f"public.{q(staging)}"
+    out: Dict[str, Any] = {}
+    if ("customer_name" in wanted and "kunnr" in cols) or ("local_currency" in wanted and "bukrs" in cols):
+        kunnrs, bukrs = [], []
+        if "kunnr" in cols:
+            cur.execute(f"SELECT DISTINCT kunnr FROM {st} WHERE kunnr IS NOT NULL")
+            kunnrs = [r[0] for r in cur.fetchall()]
+        if "bukrs" in cols:
+            cur.execute(f"SELECT DISTINCT bukrs FROM {st} WHERE bukrs IS NOT NULL")
+            bukrs = [r[0] for r in cur.fetchall()]
+        reference.refresh_if_needed(cur, kunnrs, bukrs)
+    if "doc_ref" in wanted and {"xblnr", "belnr"} <= cols:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN doc_ref text")
+        cur.execute(f"UPDATE {st} SET doc_ref = COALESCE(NULLIF(TRIM(xblnr), ''), belnr)")
+    if "customer_name" in wanted and "kunnr" in cols:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN customer_name text")
+        cur.execute(f"""UPDATE {st} s SET customer_name = NULLIF(TRIM(c.name1), '')
+                        FROM public.{reference.CUSTOMER_TABLE} c WHERE c.kunnr = s.kunnr""")
+        cur.execute(f"SELECT DISTINCT kunnr FROM {st} WHERE customer_name IS NULL AND kunnr IS NOT NULL")
+        missing = [r[0] for r in cur.fetchall()]
+        if missing:
+            out["customer_name_missing"] = missing[:10]
+            logger.warning(f"[INGEST] {sap_table}: no KNA1 name for customer(s) {missing[:10]}")
+    if "local_currency" in wanted and "bukrs" in cols:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN local_currency text")
+        cur.execute(f"""UPDATE {st} s SET local_currency = NULLIF(TRIM(c.waers), '')
+                        FROM public.{reference.COMPANY_TABLE} c WHERE c.bukrs = s.bukrs""")
+        cur.execute(f"SELECT DISTINCT bukrs FROM {st} WHERE local_currency IS NULL AND bukrs IS NOT NULL")
+        missing = [r[0] for r in cur.fetchall()]
+        if missing:
+            out["local_currency_missing"] = missing[:10]
+            logger.warning(f"[INGEST] {sap_table}: no T001 currency for company code(s) {missing[:10]}")
+    if "zero_tds" in wanted:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN tds_value double precision DEFAULT 0, "
+                    "ADD COLUMN adjusted_amount double precision DEFAULT 0")
+    return out
+
+
 def target_for(sap_table: str) -> Dict[str, str]:
     """
     Target process for a delta table, so the ingestion API skips AI classification:
@@ -332,6 +397,7 @@ def _run_one(conn, client: IngestionClient, sap_table: str, env: Optional[str], 
                     SELECT passportid, {select_sql} FROM public.{q(target)}
                     WHERE ingestion_run_id = %s AND ingestion_status = 'IN_PROGRESS'
                     ORDER BY first_seen_at, passportid""", (run_id,))
+    _enrich_staging(cur, sap_table, staging)
     cur.execute(f"UPDATE public.{RUN_TABLE} SET record_count = %s WHERE run_id = %s", (len(passports), run_id))
     cur.execute(f"SELECT started_at FROM public.{RUN_TABLE} WHERE run_id = %s", (run_id,))
     started = cur.fetchone()[0]

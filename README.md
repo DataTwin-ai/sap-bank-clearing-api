@@ -220,3 +220,30 @@ On the host: container `sap-bank-clearing-api`, files under `/opt/sap-bank-clear
 - Roll back: re-run an older build, or on the host
   `docker rm -f sap-bank-clearing-api` and re-run with an older `sap-bank-clearing-api:<release>` image.
 - Logs: `/opt/sap-bank-clearing-api/log/log_YYYYMMDD.txt` (UTC date, one file per day) or `sudo docker logs -f sap-bank-clearing-api`. Find a request by its `batch_id`; commands in `bank_posting/samples/README.md`.
+
+## SAP sync every minute (inside the container)
+
+The container also keeps DataTwin in step with SAP. No cron or extra service is needed on the server:
+it ships with the normal deploy above.
+
+```
+API container ── sap_sync_scheduler.py (one uvicorn worker, every 60 s)
+                   └─ python /app/sap_sync/cli.py delta --cron        (separate process)
+                        ├─ SAP BSID / BSAD / VBRK / VBRP ──► active_bsid / _bsad / _vbrk / _vbrp
+                        │    (new / changed rows only; each new SAP row gets a passportid)
+                        └─ one ingestion job at a time ──► Ingestion API ──► active_bt3h / active_bt3i
+```
+
+| | |
+|---|---|
+| Code | `sap-extraction-api/*.py`, copied to `/app/sap_sync/` in the image; [sap_sync_scheduler.py](sap_sync_scheduler.py) starts it |
+| Settings | Non-secret ones in [sap-extraction-api/container.ini](sap-extraction-api/container.ini): tables, ingestion URL, themes, and `[sync] org_id = OM0000000002` (org of the SAP data, used for ingestion and in new passport IDs `PPSAP02…`). DB / SAP connection and `tenant_id` come from this API's `config.ini` (same keys), which is read after it and wins |
+| On / off | `SAP_SYNC_ENABLED` in [buildspec.yml](buildspec.yml) (default `true`), passed to the container by `deploy/deploy.sh`. On a developer PC it is off unless you set `SAP_SYNC_ENABLED=true` |
+| Logs | `/opt/sap-bank-clearing-api/log/sap_sync/cron.log` and `cron.out`, written **only when data moved or something failed** (a quiet minute writes nothing). Start / stop lines go to the normal `log_YYYYMMDD.txt` |
+| Is it running? | `GET https://demo.datatwin.ai/sap/bank/api/sap-sync/status` (header `X-API-Key`): `alive` (a run finished in the last 3 minutes), `seconds_since_last_run`, last run and last run that moved data, last poll per table, rows waiting for ingestion, last ingestion runs. Same data in the DB: `sap_extraction_state.last_poll_at`, `sap_ingestion_run` |
+| Ingestion jobs | Each ingestion run shows in the ingestion console (lv.datatwin.ai/data-model-ingestion/dashboard) as `dm00005.active_<table>_delta`; its ID ends with the last 6 characters of our `run_id` (`TR_SAP_BSID_…_611288` → `7_611288`) |
+
+Only one uvicorn worker runs the sync (lock file `data/sap_sync/scheduler.lock`). A run starts only after the previous one ended; a run still busy after 15 minutes is stopped (`SAP_SYNC_TIMEOUT`). A poll of the same table from another place, such as an old `sap-extraction-worker` on the host, is skipped through a database lock, so nothing is polled or sent twice. Still, stop that worker once the container sync runs (`sudo systemctl disable --now sap-extraction-worker`, if it exists).
+
+Run one cycle by hand on the host: `sudo docker exec -w /app/sap_sync sap-bank-clearing-api python cli.py delta --cron`;
+queue status: `... python cli.py delta-status`.

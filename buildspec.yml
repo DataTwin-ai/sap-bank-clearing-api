@@ -26,6 +26,8 @@ env:
     ROOT_PATH: "/sap/bank"
     CONFIG_PARAM: "/sap-bank-clearing-api/config.ini"
     DEPLOY_TIMEOUT_SECONDS: "900"
+    # 1-minute SAP sync inside the container (BSID/BSAD/VBRK/VBRP -> ingestion); "false" = off
+    SAP_SYNC_ENABLED: "true"
 
 phases:
   pre_build:
@@ -34,7 +36,7 @@ phases:
       - RELEASE="${COMMIT_TAG}-${CODEBUILD_BUILD_NUMBER:-0}"
       - BUNDLE_URI="s3://${BUNDLE_BUCKET}/${BUNDLE_PREFIX}/${RELEASE}.tar.gz"
       - echo "Release ${RELEASE} -> ${BUNDLE_URI}"
-      - python3 -m py_compile main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py bank_posting/*.py
+      - python3 -m py_compile main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py sap_sync_scheduler.py bank_posting/*.py sap-extraction-api/*.py
 
   build:
     commands:
@@ -42,8 +44,9 @@ phases:
       - |
         tar -czf "/tmp/${RELEASE}.tar.gz" \
           Dockerfile .dockerignore requirements.txt \
-          main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py \
-          bank_posting deploy/deploy.sh
+          main.py api.py logger_setup.py db_manager.py sap_odata_extractor.py sap_sync_scheduler.py \
+          bank_posting deploy/deploy.sh \
+          sap-extraction-api/*.py sap-extraction-api/requirements.txt sap-extraction-api/container.ini
       - ls -lh "/tmp/${RELEASE}.tar.gz"
       - aws s3 cp "/tmp/${RELEASE}.tar.gz" "$BUNDLE_URI" --sse aws:kms --only-show-errors
 
@@ -59,7 +62,7 @@ phases:
         set -e
         # deploy.sh is sent inline so the host always runs the matching version
         SCRIPT_B64=$(base64 -w0 deploy/deploy.sh)
-        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/${APP_NAME}-deploy.sh && APP_NAME=${APP_NAME} HOST_PORT=${HOST_PORT} ROOT_PATH=${ROOT_PATH} CONFIG_PARAM=${CONFIG_PARAM} bash /tmp/${APP_NAME}-deploy.sh ${BUNDLE_URI} ${RELEASE} ${AWS_DEFAULT_REGION}"
+        CMD="echo ${SCRIPT_B64} | base64 -d > /tmp/${APP_NAME}-deploy.sh && APP_NAME=${APP_NAME} HOST_PORT=${HOST_PORT} ROOT_PATH=${ROOT_PATH} CONFIG_PARAM=${CONFIG_PARAM} SAP_SYNC_ENABLED=${SAP_SYNC_ENABLED} bash /tmp/${APP_NAME}-deploy.sh ${BUNDLE_URI} ${RELEASE} ${AWS_DEFAULT_REGION}"
         python3 -c 'import json,sys; print(json.dumps({"commands":[sys.argv[1]],"executionTimeout":[sys.argv[2]]}))' \
           "$CMD" "$DEPLOY_TIMEOUT_SECONDS" > ssm-params.json
 

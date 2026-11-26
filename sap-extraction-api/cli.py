@@ -2,9 +2,9 @@
 Command line / cron entry point for the SAP extraction service.
 
   Delta (every minute, only new / changed rows, ingestion queue):
-    python cli.py delta-init BSID            # one time: convert active_bsid, existing rows = DONE
+    python cli.py delta-init BSID            # one time: convert active_bsid, rows already in BT3H = DONE
     python cli.py worker                     # long-running loop: poll every 60s + ingestion (systemd)
-    python cli.py delta                      # one poll of all [delta] tables + one ingestion cycle (cron)
+    python cli.py delta --cron               # one poll of all [delta] tables + one ingestion cycle (1-minute cron)
     python cli.py delta-poll [BSID]          # poll only
     python cli.py ingest [--no-wait]         # ingestion cycle only
     python cli.py delta-status               # queue counts, last poll, recent runs
@@ -29,6 +29,7 @@ Exit codes (for cron / monitoring):
 import argparse
 import json
 import sys
+from datetime import datetime
 
 from logger_setup import get_logger, setup_logging
 
@@ -37,6 +38,22 @@ EXIT_OK, EXIT_FAILED, EXIT_PARTIAL, EXIT_BUSY = 0, 1, 2, 75
 
 def _print(obj) -> None:
     print(json.dumps(obj, indent=2, default=str))
+
+
+def _cron_activity(res: dict) -> bool:
+    """`delta --cron` result worth a line in cron.out: rows found / sent, a job running, or an error."""
+    if res.get("status") != "success":
+        return True
+    for t in (res.get("poll") or {}).get("tables", {}).values():
+        if t.get("status") == "failed":
+            return True
+        if any(t.get(k) for k in ("new", "changed", "removed", "back_from_removed")):
+            return True
+    cleared = res.get("cleared") or {}
+    if cleared.get("status") == "failed" or cleared.get("marked") or cleared.get("reopened"):
+        return True
+    ing = res.get("ingestion") or {}
+    return bool(ing.get("runs")) or ing.get("status") not in ("success", "disabled", "busy")
 
 
 def main(argv=None) -> int:
@@ -78,7 +95,9 @@ def main(argv=None) -> int:
     p.add_argument("tables", nargs="*", help="Default: [delta] tables")
     p = sub.add_parser("ingest", help="Send PENDING rows to the ingestion API (one run per table)")
     p.add_argument("--no-wait", action="store_true", help="Submit and return; the next cycle finishes the run")
-    sub.add_parser("delta", help="delta-poll + ingest (for a 1-minute cron)")
+    p = sub.add_parser("delta", help="delta-poll + ingest (for a 1-minute cron)")
+    p.add_argument("--cron", action="store_true",
+                   help="Don't wait for ingestion jobs (the next run checks them); one-line JSON output")
     sub.add_parser("worker", help="Loop: poll every [delta] poll_seconds, ingestion in the background")
     sub.add_parser("delta-status", help="Queue counts, last poll, recent ingestion runs")
     p = sub.add_parser("delta-retry", help="Move FAILED rows back to PENDING")
@@ -118,11 +137,16 @@ def main(argv=None) -> int:
             import delta
             import ingestion
             res = {"poll": delta.poll_all(env=args.env)}
+            # open invoices cleared in SAP -> marked in active_bt3h (settlementstatus / clearing doc)
+            res["cleared"] = delta.mark_cleared(env=args.env)
             try:
-                res["ingestion"] = ingestion.run_ingestion(env=args.env)
+                # --cron: submit / check jobs without waiting, so each run ends well within the minute
+                res["ingestion"] = ingestion.run_ingestion(env=args.env, wait=not args.cron)
             except pipeline.PipelineBusy as exc:
                 res["ingestion"] = {"status": "busy", "message": str(exc)}
             res["status"] = res["poll"]["status"]
+            if res["status"] == "success" and res["ingestion"].get("status") in ("failed", "partial_success"):
+                res["status"] = "partial_success"
         elif args.action == "delta-status":
             import delta
             res = delta.status(env=args.env)
@@ -173,7 +197,13 @@ def main(argv=None) -> int:
         _print({"status": "failed", "error": str(exc)})
         return EXIT_FAILED
 
-    _print(res)
+    if getattr(args, "cron", False):
+        # cron.out gets a line only when data moved or something went wrong, not every minute
+        if _cron_activity(res):
+            print(json.dumps({"at": datetime.now().isoformat(timespec="seconds"), **res},
+                             default=str, separators=(",", ":")))
+    else:
+        _print(res)
     status = res.get("status") if isinstance(res, dict) else "success"
     return {"success": EXIT_OK, "partial_success": EXIT_PARTIAL}.get(status, EXIT_FAILED)
 

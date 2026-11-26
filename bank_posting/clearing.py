@@ -85,7 +85,8 @@ def read_connection(org_id: str, connection_id: str, column: str,
             )
             has_col = cur.fetchone() is not None
             q = sql.SQL(
-                "SELECT source, sno, connectingdocumentnumber, documentvalue, documentstatus, {col}, customername "
+                "SELECT source, sno, connectingdocumentnumber, documentvalue, documentstatus, {col}, customername, "
+                "customeraccount "
                 "FROM {tbl} WHERE orgid = %s AND documentid = %s "
                 "ORDER BY source DESC, length(sno), sno"
             ).format(
@@ -96,7 +97,7 @@ def read_connection(org_id: str, connection_id: str, column: str,
             rows = [
                 {"source": r[0], "sno": r[1], "ref": _text(r[2]),
                  "amount": parse_amount(r[3]), "status": r[4], "clearing_doc": _text(r[5]),
-                 "customer_name": " ".join(_text(r[6]).split())}
+                 "customer_name": " ".join(_text(r[6]).split()), "customer_account": _text(r[7])}
                 for r in cur.fetchall()
             ]
     finally:
@@ -108,6 +109,9 @@ def read_connection(org_id: str, connection_id: str, column: str,
         "bank": [r for r in rows if (r["source"] or "").lower() == "bank"],
         "cleared_by": sorted({r["clearing_doc"] for r in rows if r["clearing_doc"]}),
         "customer_names": sorted({r["customer_name"] for r in rows if r["customer_name"]}),
+        # SAP customer on the invoice rows (AR Inbox fills it when it connects SAP open items)
+        "customer_accounts": sorted({alpha(r["customer_account"]) for r in rows
+                                     if (r["source"] or "").lower() == "invoice" and r["customer_account"]}),
     }
 
 
@@ -387,7 +391,16 @@ class SAPClearingClient(SAPBankPostingClient):
 # Main entry
 # ---------------------------------------------------------------------------
 def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: bool = True,
-                     match_by: Optional[str] = None) -> Dict[str, Any]:
+                     match_by: Optional[str] = None,
+                     preview_connection: Optional[Dict[str, Any]] = None,
+                     index: Optional[OpenItemIndex] = None) -> Dict[str, Any]:
+    """
+    preview_connection (dry_run only): connection rows as read_connection() returns them, used when
+    the connection is not in active_cnx yet (POST /api/clearing/match validates a match before writing it).
+    index: SAP items already read by the caller (POST /api/clearing/match reads them once per batch).
+    """
+    if preview_connection is not None and not dry_run:
+        raise ValueError("preview_connection is only allowed with dry_run")
     cfg = load_bank_config()
     column = _check_column_name(cfg["cnx_clearing_column"])
     match_by = (match_by or cfg["clearing_match_by"]).upper()
@@ -414,6 +427,9 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
     except Exception as e:
         logger.exception(f"{log}: could not read {CNX_TABLE}: {e}")
         raise RuntimeError(f"Could not read {CNX_TABLE}: {e}") from e
+    if preview_connection is not None and not cnx["rows"]:
+        cnx = {**preview_connection, "column_exists": cnx["column_exists"]}
+        logger.info(f"{log}: connection not in {CNX_TABLE} yet - checking the preview rows")
     logger.info(f"{log}: connection rows={len(cnx['rows'])} (invoice {len(cnx['invoices'])}, bank {len(cnx['bank'])}), "
                 f"{column} exists={cnx['column_exists']}, already cleared by={cnx['cleared_by'] or '-'}, "
                 f"customer names={cnx['customer_names'] or '-'}")
@@ -424,8 +440,8 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
     from_config: List[str] = []
     customer_from: Optional[str] = None
     company_from: Optional[str] = None
-    sap_tables: List[str] = []
-    index_box: List[OpenItemIndex] = []
+    sap_tables: List[str] = [] if index is None else ["read by the caller"]
+    index_box: List[OpenItemIndex] = [index] if index is not None else []
 
     def sap_index() -> OpenItemIndex:
         """BSID / BSAD from SAP, read once per request."""
@@ -468,6 +484,12 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
     #    > DataTwin table (bukrs from SAP extraction) > [customers:..] / [org:..] config.
     #    SAP first: document numbers repeat across company codes, only SAP knows which one is open.
     usable = [i for i in item["invoices"] if i["invoice_ref"] and not i.get("unmapped")]
+    accounts = cnx.get("customer_accounts") or []
+    if not item["customer"] and len(accounts) == 1:
+        item["customer"] = accounts[0]
+        customer_from = f"connection {CNX_TABLE}.customeraccount ({accounts[0]})"
+    elif not item["customer"] and len(accounts) > 1:
+        errs.append(f"Connection has several customer accounts ({', '.join(accounts)}): send 'customer'")
     if cnx["rows"] and usable and (not item["company_code"] or not item["customer"]):
         b, k, note = resolve_company(sap_index(), [(i["invoice_ref"], i["amount"]) for i in usable], match_by,
                                      kunnr=item["customer"] or None, bukrs=item["company_code"] or None)

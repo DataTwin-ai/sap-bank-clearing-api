@@ -49,7 +49,7 @@ def ingestion_settings() -> Dict[str, Any]:
         "request_timeout": max(5, settings.get_int("ingestion", "request_timeout", "INGESTION_REQUEST_TIMEOUT", 120)),
         "max_retries": max(1, settings.get_int("ingestion", "max_retries", "INGESTION_MAX_RETRIES", 3)),
         "tenant_id": settings.get("defaults", "tenant_id", "TENANT_ID", "DM00005"),
-        "org_id": settings.get("defaults", "org_id", "ORG_ID", "OM0000000001"),
+        "org_id": settings.sync_org_id(),
         "product_name": settings.get("ingestion", "product_name", "INGESTION_PRODUCT_NAME", ""),
         "user_id": settings.get("ingestion", "user_id", "INGESTION_USER_ID", ""),
         "save_location": settings.get("ingestion", "save_location", "INGESTION_SAVE_LOCATION", ""),
@@ -75,6 +75,71 @@ def staging_columns(sap_table: str) -> List[Tuple[str, str]]:
             out.append((parts[0], parts[0]))
         elif parts:
             raise ValueError(f"[ingestion] columns_{t}: cannot read '{item.strip()}' (use 'column' or 'column as name')")
+    return out
+
+
+ENRICHMENTS = ("doc_ref", "customer_name", "local_currency", "zero_tds")
+
+
+def enrichments_for(sap_table: str) -> List[str]:
+    """[ingestion] enrich_bsid = doc_ref, customer_name, local_currency, zero_tds (see _enrich_staging)."""
+    t = sap_table.lower()
+    raw = settings.get("ingestion", f"enrich_{t}", f"INGESTION_ENRICH_{t.upper()}", "")
+    return [e for e in (x.strip().lower() for x in raw.replace(";", ",").split(",")) if e in ENRICHMENTS]
+
+
+def _enrich_staging(cur, sap_table: str, staging: str) -> Dict[str, Any]:
+    """
+    Adds columns the AR Inbox reads, computed from the staged SAP row, before it is sent:
+      doc_ref         invoice reference: XBLNR, else BELNR                (theme DocumentRef)
+      customer_name   KNA1-NAME1 of KUNNR (sap_ref_customer)              (theme SenderName)
+      local_currency  company code currency, T001-WAERS of BUKRS          (theme Currency / LocalCurrency)
+                      DMBTR is in this currency; WAERS is the document currency
+      tds_value, adjusted_amount = 0                                      (theme TDSValue / AdjustedAmount)
+    Returns counts for the log, e.g. {"customer_name_missing": 1}.
+    """
+    wanted = enrichments_for(sap_table)
+    if not wanted:
+        return {}
+    import reference
+    cur.execute("""SELECT column_name FROM information_schema.columns
+                   WHERE table_schema = 'public' AND table_name = %s""", (staging,))
+    cols = {r[0] for r in cur.fetchall()}
+    st = f"public.{q(staging)}"
+    out: Dict[str, Any] = {}
+    if ("customer_name" in wanted and "kunnr" in cols) or ("local_currency" in wanted and "bukrs" in cols):
+        kunnrs, bukrs = [], []
+        if "kunnr" in cols:
+            cur.execute(f"SELECT DISTINCT kunnr FROM {st} WHERE kunnr IS NOT NULL")
+            kunnrs = [r[0] for r in cur.fetchall()]
+        if "bukrs" in cols:
+            cur.execute(f"SELECT DISTINCT bukrs FROM {st} WHERE bukrs IS NOT NULL")
+            bukrs = [r[0] for r in cur.fetchall()]
+        reference.refresh_if_needed(cur, kunnrs, bukrs)
+    if "doc_ref" in wanted and {"xblnr", "belnr"} <= cols:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN doc_ref text")
+        cur.execute(f"UPDATE {st} SET doc_ref = COALESCE(NULLIF(TRIM(xblnr), ''), belnr)")
+    if "customer_name" in wanted and "kunnr" in cols:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN customer_name text")
+        cur.execute(f"""UPDATE {st} s SET customer_name = NULLIF(TRIM(c.name1), '')
+                        FROM public.{reference.CUSTOMER_TABLE} c WHERE c.kunnr = s.kunnr""")
+        cur.execute(f"SELECT DISTINCT kunnr FROM {st} WHERE customer_name IS NULL AND kunnr IS NOT NULL")
+        missing = [r[0] for r in cur.fetchall()]
+        if missing:
+            out["customer_name_missing"] = missing[:10]
+            logger.warning(f"[INGEST] {sap_table}: no KNA1 name for customer(s) {missing[:10]}")
+    if "local_currency" in wanted and "bukrs" in cols:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN local_currency text")
+        cur.execute(f"""UPDATE {st} s SET local_currency = NULLIF(TRIM(c.waers), '')
+                        FROM public.{reference.COMPANY_TABLE} c WHERE c.bukrs = s.bukrs""")
+        cur.execute(f"SELECT DISTINCT bukrs FROM {st} WHERE local_currency IS NULL AND bukrs IS NOT NULL")
+        missing = [r[0] for r in cur.fetchall()]
+        if missing:
+            out["local_currency_missing"] = missing[:10]
+            logger.warning(f"[INGEST] {sap_table}: no T001 currency for company code(s) {missing[:10]}")
+    if "zero_tds" in wanted:
+        cur.execute(f"ALTER TABLE {st} ADD COLUMN tds_value double precision DEFAULT 0, "
+                    "ADD COLUMN adjusted_amount double precision DEFAULT 0")
     return out
 
 
@@ -239,8 +304,12 @@ def _finalize(conn, run: Dict[str, Any], outcome: str, job: Optional[Dict[str, A
             "job_id": run.get("job_id"), "job_status": (job or {}).get("status"), "error": error}
 
 
-def _resume_running(conn, client: IngestionClient) -> Optional[Dict[str, Any]]:
-    """Finishes a run that a previous (stopped) worker left in RUNNING state."""
+def _resume_running(conn, client: IngestionClient, wait: bool = True) -> Optional[Dict[str, Any]]:
+    """
+    Finishes a run left in RUNNING state (stopped worker, or a cron cycle that submitted it).
+    wait=False (cron): checks the job once; a job still running returns status RUNNING and is
+    checked again by the next cycle (no new run starts meanwhile).
+    """
     cur = conn.cursor()
     cur.execute(f"""SELECT run_id, sap_table, target_table, staging_table, job_id, started_at
                     FROM public.{RUN_TABLE} WHERE status = 'RUNNING' LIMIT 1""")
@@ -263,8 +332,22 @@ def _resume_running(conn, client: IngestionClient) -> Optional[Dict[str, Any]]:
         started = started.replace(tzinfo=timezone.utc)
     try:
         first = client.get_job(run["job_id"])
-    except (requests.RequestException, IngestionError):
+    except (requests.RequestException, IngestionError) as exc:
+        logger.warning(f"[INGEST] job {run['job_id']}: status check failed ({exc})")
         first = None
+    if not wait:
+        state = _job_state(first)
+        timed_out = time.time() > started.timestamp() + client.cfg["job_timeout_minutes"] * 60
+        if state == "RUNNING" and not timed_out:
+            logger.info(f"[INGEST] run {run['run_id']}: job {run['job_id']} still running "
+                        f"(status={(first or {}).get('status')}); checking again next cycle")
+            return {"run_id": run["run_id"], "sap_table": run["sap_table"], "status": "RUNNING",
+                    "job_id": run["job_id"], "job_status": (first or {}).get("status")}
+        if state == "RUNNING":
+            return _finalize(conn, run, "FAILED", first,
+                             f"Timed out after {client.cfg['job_timeout_minutes']} min waiting for job {run['job_id']}",
+                             client.cfg["max_retries"])
+        return _finalize(conn, run, state, first, (first or {}).get("error"), client.cfg["max_retries"])
     outcome, job, error = _wait_for_job(client, run["job_id"], started, first)
     return _finalize(conn, run, outcome, job, error, client.cfg["max_retries"])
 
@@ -314,6 +397,7 @@ def _run_one(conn, client: IngestionClient, sap_table: str, env: Optional[str], 
                     SELECT passportid, {select_sql} FROM public.{q(target)}
                     WHERE ingestion_run_id = %s AND ingestion_status = 'IN_PROGRESS'
                     ORDER BY first_seen_at, passportid""", (run_id,))
+    _enrich_staging(cur, sap_table, staging)
     cur.execute(f"UPDATE public.{RUN_TABLE} SET record_count = %s WHERE run_id = %s", (len(passports), run_id))
     cur.execute(f"SELECT started_at FROM public.{RUN_TABLE} WHERE run_id = %s", (run_id,))
     started = cur.fetchone()[0]
@@ -387,6 +471,27 @@ def _has_column(cur, table: str, column: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _has_work(env: Optional[str], tables: List[str]) -> bool:
+    """True when a run is RUNNING or a delta table has PENDING rows."""
+    conn = _connect(env)
+    try:
+        cur = conn.cursor()
+        ensure_control_tables(cur)
+        conn.commit()
+        cur.execute(f"SELECT 1 FROM public.{RUN_TABLE} WHERE status = 'RUNNING' LIMIT 1")
+        if cur.fetchone():
+            return True
+        for t in tables:
+            target = get_active_table_name(clean_table_name(t))
+            if _has_column(cur, target, "passportid"):
+                cur.execute(f"SELECT 1 FROM public.{q(target)} WHERE ingestion_status = 'PENDING' LIMIT 1")
+                if cur.fetchone():
+                    return True
+        return False
+    finally:
+        conn.close()
+
+
 def run_ingestion(env: Optional[str] = None, tables: Optional[List[str]] = None, wait: bool = True) -> Dict[str, Any]:
     """
     One ingestion cycle: resume an unfinished run, then one run per delta table that has PENDING rows.
@@ -397,6 +502,9 @@ def run_ingestion(env: Optional[str] = None, tables: Optional[List[str]] = None,
         return {"status": "disabled"}
     client = IngestionClient(cfg)
     wanted = sorted({k for t in (tables or settings.delta_tables()) for k in target_for(t)})
+    if not _has_work(env, tables or settings.delta_tables()):
+        # quiet minute: no HTTP call to the ingestion service, nothing logged
+        return {"status": "success", "runs": [], "message": "Nothing to ingest"}
     missing = client.missing_fields(wanted) if wanted else []
     if missing is None or missing:
         msg = (f"Ingestion service at {cfg['base_url']} is not answering" if missing is None else
@@ -410,10 +518,11 @@ def run_ingestion(env: Optional[str] = None, tables: Optional[List[str]] = None,
             ensure_control_tables(cur)
             conn.commit()
             runs: List[Dict[str, Any]] = []
-            resumed = _resume_running(conn, client)
+            resumed = _resume_running(conn, client, wait)
             if resumed:
                 runs.append(resumed)
-            for t in tables or settings.delta_tables():
+            # one run at a time: a job still running blocks new runs until a later cycle
+            for t in ([] if resumed and resumed.get("status") == "RUNNING" else tables or settings.delta_tables()):
                 r = _run_one(conn, client, clean_table_name(t), env, wait)
                 if r:
                     runs.append(r)

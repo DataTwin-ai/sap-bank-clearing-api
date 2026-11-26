@@ -19,6 +19,8 @@
 #   CONFIG_PARAM    SSM SecureString holding config.ini
 #                                              (default: /sap-bank-clearing-api/config.ini)
 #   KEEP_RELEASES   releases/images to keep    (default: 5)
+#   SAP_SYNC_ENABLED  1-minute SAP sync inside the container (default: true)
+#                     logs: $APP_DIR/log/sap_sync/cron.log and cron.out
 # =============================================================================
 set -euo pipefail
 
@@ -32,6 +34,7 @@ BIND_ADDR="${BIND_ADDR:-127.0.0.1}"
 ROOT_PATH="${ROOT_PATH-/sap/bank}"
 CONFIG_PARAM="${CONFIG_PARAM:-/sap-bank-clearing-api/config.ini}"
 KEEP_RELEASES="${KEEP_RELEASES:-5}"
+SAP_SYNC_ENABLED="${SAP_SYNC_ENABLED:-true}"
 IMAGE="${APP_NAME}:${RELEASE}"
 RELEASE_DIR="$APP_DIR/releases/$RELEASE"
 
@@ -41,7 +44,7 @@ command -v docker >/dev/null || { log "ERROR: docker is not installed on this ho
 command -v aws    >/dev/null || { log "ERROR: aws cli is not installed on this host"; exit 1; }
 
 # --- host directories (container runs as uid 1000) ---------------------------
-mkdir -p "$APP_DIR/log" "$APP_DIR/data" "$APP_DIR/releases"
+mkdir -p "$APP_DIR/log/sap_sync" "$APP_DIR/data/sap_sync" "$APP_DIR/releases"
 chown -R 1000:1000 "$APP_DIR/log" "$APP_DIR/data"
 
 # --- download + build --------------------------------------------------------
@@ -80,6 +83,7 @@ run_container() {
     --restart unless-stopped \
     -p "${BIND_ADDR}:${HOST_PORT}:8000" \
     -e ROOT_PATH="$ROOT_PATH" \
+    -e SAP_SYNC_ENABLED="$SAP_SYNC_ENABLED" \
     -v "$APP_DIR/config.ini:/app/config.ini:ro" \
     -v "$APP_DIR/log:/app/log" \
     -v "$APP_DIR/data:/app/data" \

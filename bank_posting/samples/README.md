@@ -10,6 +10,8 @@ simulation) and post nothing. Set `"dry_run": false` only when you want a real S
 | [invoice_link_existing.json](invoice_link_existing.json) | `POST /api/bank/post` | Invoice already in SAP: find it, number → `active_bt3i.documentid` |
 | [clearing_minimal.json](clearing_minimal.json) | `POST /api/clearing/post` | Clear a connection: invoices, amount, UTR from `active_cnx`; company code, bank G/L, value date, SAP customer from `config.ini` |
 | [clearing_explicit.json](clearing_explicit.json) | `POST /api/clearing/post` | Clear a connection with the invoices given in the request |
+| [clearing_match.json](clearing_match.json) | `POST /api/clearing/match` | Match the org's bank receipts (`active_bs`) with SAP open invoices: results only |
+| [clearing_match_demo.json](clearing_match_demo.json) | `POST /api/clearing/match` | Same with bank receipts in the request: match, connection preview, SAP clearing check; nothing written |
 | [bank_file.json](bank_file.json) | `POST /api/bank/post` | Bank Excel from the tenant S3 bucket (one invoice per row) |
 | [bank_items.json](bank_items.json) | `POST /api/bank/post` | Same as JSON items (one receipt clears one invoice) |
 
@@ -36,11 +38,12 @@ cd <folder with the samples>
 curl -s -X POST "$BASE/api/invoice/post"  -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d @invoice_post.json      | python3 -m json.tool
 curl -s -X POST "$BASE/api/clearing/post" -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d @clearing_minimal.json  | python3 -m json.tool
 curl -s -X POST "$BASE/api/clearing/post" -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d @clearing_explicit.json | python3 -m json.tool
+curl -s -X POST "$BASE/api/clearing/match" -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d @clearing_match_demo.json | python3 -m json.tool
 curl -s -X POST "$BASE/api/bank/post"     -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d @invoice_link_existing.json | python3 -m json.tool
 curl -s -X POST "$BASE/api/bank/post"     -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" -d @bank_file.json         | python3 -m json.tool
 ```
 
-Every response has a `batch_id` (`INP…` invoice posting, `CLR…` clearing, `BNK…` / `INV…` bank and invoice files).
+Every response has a `batch_id` (`INP…` invoice posting, `CLR…` clearing, `MCH…` auto-match, `BNK…` / `INV…` bank and invoice files).
 Use it to find the request in the log.
 
 ## On the EC2 server (i-019cd9689708261b3)

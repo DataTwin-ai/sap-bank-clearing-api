@@ -1,0 +1,19 @@
+{
+  "org_id": "OM0000000002",
+  "dry_run": true,
+  "create_connections": true,
+  "clear": true,
+  "bank_items": [
+    {"utr": "DTDEMO1192980", "date": "2026-11-24", "amount": 1192980,
+     "narration": "NEFT Cr-DTDEMO1192980-HDFC0000240-TEST CUSTOMER_02 TEST02--RE-0090000064",
+     "transaction_number": "DEMO/20261124/1192980"},
+    {"utr": "DTDEMO4283400", "date": "2026-11-24", "amount": 4283400,
+     "narration": "NEFT Cr-DTDEMO4283400-HDFC0000240-TEST CUSTOMER_02 TEST02", "transaction_number": "DEMO/20261124/4283400"},
+    {"utr": "DTDEMO472000", "date": "2026-11-24", "amount": 472000,
+     "narration": "NEFT Cr-DTDEMO472000-SBIN0000001-PABITRA AUTOMOBILE", "transaction_number": "DEMO/20261124/472000"},
+    {"utr": "DTDEMO118000", "date": "2026-11-24", "amount": 118000,
+     "narration": "NEFT Cr-DTDEMO118000-SBIN0000001-PABITRA AUTOMOBILE", "transaction_number": "DEMO/20261124/118000"},
+    {"utr": "DTDEMO50000", "date": "2026-11-24", "amount": 50000,
+     "narration": "NEFT Cr-DTDEMO50000-HDFC0000240-LIVING MEDIA INDIA LIMITED", "transaction_number": "DEMO/20261124/50000"}
+  ]
+}

@@ -84,6 +84,8 @@ def load_bank_config() -> Dict[str, str]:
         # new customer invoices (POST /api/invoice/post)
         "invoice_rfc_function": sec.get("invoice_rfc_function", "Z_INVOICE_POST"),
         "invoice_doc_type": sec.get("invoice_doc_type", "DR").strip().upper(),
+        # bank receipts without a currency (POST /api/clearing/match), after [org:<org_id>] currency
+        "bank_currency": sec.get("bank_currency", "INR").strip().upper(),
         "default_doc_type": sec.get("default_doc_type", "DZ"),
         "default_match_by": sec.get("default_match_by", "XBLNR").upper(),
         "check_open_items": sec.get("check_open_items", "true").lower()

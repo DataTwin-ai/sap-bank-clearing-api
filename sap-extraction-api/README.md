@@ -8,8 +8,8 @@ It runs in two ways that share the same code:
 |---|---|---|
 | API | `uvicorn main:app` (FastAPI) | On-demand extraction, previews, Swagger at `/docs` |
 | Cron | `deploy/run_cron.sh sync` → `cli.py` | Scheduled full sync |
-
-| Delta worker | `cli.py worker` (systemd) | Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
+| Delta cron | `deploy/run_cron.sh delta --cron` (`/etc/cron.d`, `DELTA_MODE=cron`) | Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
+| Delta worker | `cli.py worker` (systemd) | Same as the delta cron as a long-running loop; use one of the two |
 
 A file lock (`data/pipeline.lock`) lets only one DB-writing run happen at a time.
 If a second run starts, the API returns **409** and the cron run exits with **75**.
@@ -51,8 +51,9 @@ On Windows, run `start_worker.bat` (keeps a console open; log in `log\worker.log
 The ingestion service must accept `process_code`. If it doesn't, or doesn't answer, nothing is sent and rows stay `PENDING`.
 
 Setup per table (one time). The current table is kept as `active_<table>_bak_<timestamp>`:
-- Rows that already exist become `DONE` and are not ingested.
-- Rows that are new in SAP become `PENDING`.
+- Rows whose document is already in the ingestion target (`active_bt3h` / `active_bt3i`, same company code + document number, any theme) become `DONE` and are not ingested.
+- All other SAP rows become `PENDING` and are ingested once, also rows that were already in the old `active_<table>`.
+- Set `[ingestion] process_code_<table>` before running it: the target table is found from it.
 
 ```bash
 python cli.py delta-init BSID
@@ -201,7 +202,7 @@ python cli.py check | list-tables | sap-tables --filter BS | sap-metadata BSID
 
 python cli.py delta-init BSID [--all-done]   # one time per delta table
 python cli.py worker                         # loop (systemd)
-python cli.py delta                          # one poll + one ingestion cycle (1-minute cron)
+python cli.py delta [--cron]                 # one poll + one ingestion cycle (1-minute cron: --cron)
 python cli.py delta-poll [BSID] | ingest [--no-wait] | delta-status | delta-retry BSID
 ```
 

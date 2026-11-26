@@ -1,19 +1,20 @@
-# SAP extraction cron jobs - install with:  sudo -u sapapp crontab -e
+# SAP extraction cron jobs.
 # Times are in the server's timezone (EC2 default: UTC). 00:30 UTC = 06:00 IST.
 # Exit codes: 0 ok, 1 failed, 2 partial, 75 skipped (previous run still running).
 # Detailed log: /opt/sap-extraction-api/log/cron.log ; JSON result of each run: log/cron.out
 #
-# BSID / BSAD do NOT need cron: the systemd worker (deploy/sap-extraction-worker.service)
-# polls SAP every 60 s and sends new / changed rows to the ingestion API (queue).
+# 1-minute delta sync (BSID, BSAD, VBRK, VBRP -> queue -> ingestion API).
+# Normally installed by:  sudo DELTA_MODE=cron bash deploy/install.sh
+# which writes it to /etc/cron.d/sap-extraction-delta (with the user column, as below) and
+# disables the systemd worker. Use either this cron OR the worker, never both.
+# --cron: each run polls SAP, checks / submits one ingestion job and exits (no waiting);
+# a run that overlaps the previous one skips the parts still running (file locks).
+# * * * * * sapapp /opt/sap-extraction-api/deploy/run_cron.sh delta --cron >> /opt/sap-extraction-api/log/cron.out 2>&1
 
 # Optional - full loads of the non-delta [sap] tables (e.g. KNA1, T001) once a day at 06:00 IST.
-# Not needed while [sap] tables only lists delta tables.
+# Not needed while [sap] tables only lists delta tables.  (crontab -e format: no user column)
 # 30 0 * * * /opt/sap-extraction-api/deploy/run_cron.sh sync >> /opt/sap-extraction-api/log/cron.out 2>&1
 
-# Fallback only - without the systemd worker: one delta poll + ingestion cycle every minute.
-# A cycle that finds an ingestion still running just polls and leaves ingestion alone.
-# * * * * * /opt/sap-extraction-api/deploy/run_cron.sh delta >> /opt/sap-extraction-api/log/cron.out 2>&1
-
 # Fallback only - direct copy active_bsid -> active_bt3h while the ingestion API is not available.
-# Remove it once the worker ingests BSID, otherwise invoices appear twice in active_bt3h.
+# Remove it once the delta sync ingests BSID, otherwise invoices appear twice in active_bt3h.
 # */5 * * * * /opt/sap-extraction-api/deploy/run_cron.sh sync-bt3i >> /opt/sap-extraction-api/log/cron.out 2>&1

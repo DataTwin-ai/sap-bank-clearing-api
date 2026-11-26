@@ -321,13 +321,41 @@ def _save_state(cur, target: str, sap_table: str, **fields: Any) -> None:
 # ---------------------------------------------------------------------------
 # One-time conversion of an existing / new table
 # ---------------------------------------------------------------------------
+# SAP document column of each delta table, matched to documentid of the rows it was ingested into
+DOC_COLUMNS = {"BSID": "belnr", "BSAD": "belnr", "VBRK": "vbeln", "VBRP": "vbeln"}
+
+
+def _ingested_docs(cur, sap_table: str) -> Optional[set]:
+    """
+    (company code, document) pairs already in the table the ingestion API loads sap_table into
+    (process code BT3H -> active_bt3h) for the sync org, any theme. Company code is '' when the
+    ingested row has none. None = cannot tell (no document column, process code or target table).
+    """
+    from ingestion import target_for  # ingestion imports this module
+    code = target_for(sap_table).get("process_code", "")
+    target = f"active_{code.lower()}"
+    if sap_table not in DOC_COLUMNS or not code or not re.fullmatch(r"[a-z0-9_]+", target):
+        return None
+    cols = table_columns(cur, target)
+    if "documentid" not in cols:
+        return None
+    bukrs = "COALESCE(TRIM(bukrs::text), '')" if "bukrs" in cols else "''"
+    cur.execute(f"""SELECT DISTINCT {bukrs}, TRIM(documentid::text) FROM public.{q(target)}
+                    WHERE orgid = %s AND documentid IS NOT NULL""", (settings.sync_org_id(),))
+    return set(cur.fetchall())
+
+
 def init_table(sap_table: str, env: Optional[str] = None, target: Optional[str] = None,
                all_done: bool = False) -> Dict[str, Any]:
     """
     Creates the delta version of active_<table> from a fresh SAP snapshot.
 
-    * Rows that already exist in the current active_<table> -> ACTIVE / DONE (not re-ingested)
-    * Rows that are not there yet                            -> NEW / PENDING (all_done=True: DONE)
+    * SAP rows whose document is already in the ingestion target (active_bt3h / active_bt3i,
+      same company code + document, any theme)  -> ACTIVE / DONE (not re-ingested)
+    * All other SAP rows                         -> NEW / PENDING (all_done=True: DONE)
+      Being in the old active_<table> is not enough: those rows may never have been ingested.
+      Only when the target cannot be checked (no process code / documentid) the old rule applies:
+      rows of the old active_<table> -> DONE.
     * The old table is kept as active_<table>_bak_<timestamp>.
     """
     sap_table = clean_table_name(sap_table)
@@ -361,8 +389,28 @@ def init_table(sap_table: str, env: Optional[str] = None, target: Optional[str] 
                     values = tuple(to_db(v, c.pg) for v, c in zip(r, spec))
                     legacy[key_hash(sap_table, (values[i] for i in key_idx))] = (values, row_hash(spec, values))
 
-            done_keys = set(fetched) if all_done else set(fetched) & set(legacy)
-            done = [(k, v, rh) for k, (v, rh) in fetched.items() if k in done_keys]
+            cols_idx = {c.db: i for i, c in enumerate(spec)}
+            doc_i = cols_idx.get(DOC_COLUMNS.get(sap_table, ""))
+            bukrs_i = cols_idx.get("bukrs", cols_idx.get("bukrs_ana"))  # VBRP: BUKRS_ANA
+            ingested = None if all_done or doc_i is None else _ingested_docs(cur, sap_table)
+            if all_done:
+                done_rule, done_keys = "all_done", set(fetched)
+            elif ingested is None:
+                logger.warning(f"[DELTA INIT] {sap_table}: ingestion target not checkable - "
+                               f"rows of the old {target} are marked DONE")
+                done_rule, done_keys = "in_old_table", set(fetched) & set(legacy)
+            else:
+                ingested_docs = {d for _, d in ingested}
+
+                def _in_target(values: tuple) -> bool:
+                    doc = str(values[doc_i] or "").strip()
+                    if bukrs_i is None:  # table without BUKRS: document number alone
+                        return doc in ingested_docs
+                    bukrs = str(values[bukrs_i] or "").strip()
+                    return (bukrs, doc) in ingested or ("", doc) in ingested
+                done_rule = "already_ingested"
+                done_keys = {k for k, (v, _) in fetched.items() if _in_target(v)}
+            done =[(k, v, rh) for k, (v, rh) in fetched.items() if k in done_keys]
             pending = [(k, v, rh) for k, (v, rh) in fetched.items() if k not in done_keys]
             # rows of the old table that SAP no longer returns (e.g. cleared) are kept as REMOVED
             gone = [(k, v, rh) for k, (v, rh) in legacy.items() if k not in fetched]
@@ -399,6 +447,7 @@ def init_table(sap_table: str, env: Optional[str] = None, target: Optional[str] 
         "target_table": target,
         "backup_table": backup,
         "sap_rows": len(fetched),
+        "done_rule": done_rule,
         "existing_rows_matched_done": len(done),
         "new_rows_pending": len(pending),
         "legacy_rows": legacy_rows,

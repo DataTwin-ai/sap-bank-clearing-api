@@ -2,7 +2,7 @@
 Command line / cron entry point for the SAP extraction service.
 
   Delta (every minute, only new / changed rows, ingestion queue):
-    python cli.py delta-init BSID            # one time: convert active_bsid, existing rows = DONE
+    python cli.py delta-init BSID            # one time: convert active_bsid, rows already in BT3H = DONE
     python cli.py worker                     # long-running loop: poll every 60s + ingestion (systemd)
     python cli.py delta --cron               # one poll of all [delta] tables + one ingestion cycle (1-minute cron)
     python cli.py delta-poll [BSID]          # poll only

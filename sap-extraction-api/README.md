@@ -9,6 +9,7 @@ It runs in two ways that share the same code:
 | API | `uvicorn main:app` (FastAPI) | On-demand extraction, previews, Swagger at `/docs` |
 | Cron | `deploy/run_cron.sh sync` → `cli.py` | Scheduled full sync |
 | Delta, in the bank API | `cli.py delta --cron`, started every minute by the sap-bank-clearing-api container (`sap_sync_scheduler.py`, settings in `container.ini`) | **Current setup.** Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
+| Delta cron | `deploy/run_cron.sh delta --cron` (`/etc/cron.d`, `DELTA_MODE=cron`) | Same on its own server (see [docs/AWS_CRON_SETUP.md](docs/AWS_CRON_SETUP.md)); never next to the container sync |
 | Delta worker | `cli.py worker` (systemd) | Same as a long-running loop on its own server; never next to the container sync |
 
 A file lock (`data/pipeline.lock`) lets only one DB-writing run happen at a time.
@@ -51,8 +52,9 @@ On Windows, run `start_worker.bat` (keeps a console open; log in `log\worker.log
 The ingestion service must accept `process_code`. If it doesn't, or doesn't answer, nothing is sent and rows stay `PENDING`.
 
 Setup per table (one time). The current table is kept as `active_<table>_bak_<timestamp>`:
-- Rows that already exist become `DONE` and are not ingested.
-- Rows that are new in SAP become `PENDING`.
+- Rows whose document is already in the ingestion target (`active_bt3h` / `active_bt3i`, same company code + document number, any theme) become `DONE` and are not ingested.
+- All other SAP rows become `PENDING` and are ingested once, also rows that were already in the old `active_<table>`.
+- Set `[ingestion] process_code_<table>` before running it: the target table is found from it.
 
 ```bash
 python cli.py delta-init BSID

@@ -2,6 +2,8 @@
 
 As of 2026-11-20
 
+> Step-by-step AWS setup of the 1-minute cron (config.ini, install, checks): [AWS_CRON_SETUP.md](AWS_CRON_SETUP.md).
+
 SAP customer items (BSID open, BSAD cleared) and billing documents (VBRK header, VBRP items) reach `active_bt3h` / `active_bt3i` through a queue: a worker polls SAP every 60 seconds, queues new and changed rows, and sends them to the Data Modelling & Ingestion API with a fixed target (process code, transaction type, pinned theme).
 
 ```
@@ -81,10 +83,19 @@ sudo tar -xzf /tmp/sap-extraction-api-<stamp>.tar.gz          # creates /opt/sap
 sudo install -m 600 /tmp/config.ini /opt/sap-extraction-api/config.ini
 rm /tmp/config.ini
 cd /opt/sap-extraction-api
-sudo bash deploy/install.sh
+sudo DELTA_MODE=cron bash deploy/install.sh      # 1-minute cron (or leave DELTA_MODE out: systemd worker)
 ```
 
-`install.sh` creates the user `sapapp`, the virtualenv and `log/` + `data/`, runs `cli.py check` (SAP + DB), shows `delta-status`, installs both systemd services and starts them. It stops before starting anything if the connectivity check fails.
+`install.sh` creates the user `sapapp`, the virtualenv and `log/` + `data/`, runs `cli.py check` (SAP + DB), shows `delta-status`, installs and starts the API service. It stops before starting anything if the connectivity check fails.
+
+The 1-minute delta sync runs in one of two ways (`DELTA_MODE`), never both:
+
+| Mode | What install.sh sets up | Each minute |
+| --- | --- | --- |
+| `cron` | `/etc/cron.d/sap-extraction-delta` (installs `cronie` on Amazon Linux 2023), `/etc/logrotate.d/sap-extraction-cron`; stops and disables the worker | `cli.py delta --cron`: polls the 4 tables, checks the running ingestion job once or submits the next one, exits. Output: one JSON line in `log/cron.out`, details in `log/cron.log` |
+| `worker` (default) | systemd unit `sap-extraction-worker`; removes the cron file | Long-running loop, log in `log/worker.log` |
+
+Switching later is the same command with the other `DELTA_MODE`; the queue in the DB is shared, so nothing is lost or sent twice.
 
 `config.ini` on the server: `current_env` picks the DB section (`development` = `dm00005` on the dev DB server). `[ingestion] base_url` must be the deployed ingestion URL. No local paths are needed: `log` and `data` are relative to the project folder.
 
@@ -94,14 +105,14 @@ The queue tables must exist before the worker starts. On the dev DB `dm00005` al
 
 ```bash
 cd /opt/sap-extraction-api
-sudo -u sapapp .venv/bin/python cli.py delta-init BSID --all-done   # existing SAP rows = DONE (not re-sent)
-sudo -u sapapp .venv/bin/python cli.py delta-init BSAD              # existing rows = PENDING (sent once)
+sudo -u sapapp .venv/bin/python cli.py delta-init BSID              # rows already in active_bt3h = DONE, the rest PENDING
+sudo -u sapapp .venv/bin/python cli.py delta-init BSAD
 sudo -u sapapp .venv/bin/python cli.py delta-init VBRK
 sudo -u sapapp .venv/bin/python cli.py delta-init VBRP
 sudo systemctl restart sap-extraction-worker
 ```
 
-Use `--all-done` when those rows already exist in `active_bt3h`; leave it out to ingest the current SAP rows once.
+`delta-init` marks a row `DONE` only when its document (company code + BELNR / VBELN) is already in the ingestion target (`active_bt3h`, or `active_bt3i` for VBRP), from any theme. Every other current SAP row is `PENDING` and is ingested once. `--all-done` marks every row `DONE` without checking. Use it only when you really want none of the current rows sent.
 
 ## 6. Verify
 
@@ -176,8 +187,8 @@ Stopping the worker is always safe: rows stay PENDING and are sent when it start
 
 No code change:
 
-1. `cli.py delta-init <TABLE>` (add `--all-done` to skip the current rows).
-2. `config.ini`: add the table to `[delta] tables` (an item table after its header table), and add `process_code_<table>`, `transaction_type_<table>`, `theme_name_<table>`, `columns_<table>` under `[ingestion]`. `columns_<table>` accepts `column as name` to rename a column.
+1. `config.ini`: add the table to `[delta] tables` (an item table after its header table), and add `process_code_<table>`, `transaction_type_<table>`, `theme_name_<table>`, `columns_<table>` under `[ingestion]`. `columns_<table>` accepts `column as name` to rename a column.
+2. `cli.py delta-init <TABLE>`. Rows already in the ingestion target become `DONE`, the rest `PENDING` (`--all-done` skips them all). For a table not in `delta.DOC_COLUMNS` the old rule applies: rows of the old `active_<table>` become `DONE`.
 3. Create the theme in `theme_mapping` (copy `deploy/sql/sales_invoice_themes.sql`). Map `SNO` to the source line number (or the constant `1` for a header table): it is part of the row key, so a changed SAP row updates its stored row.
 4. `sudo systemctl restart sap-extraction-worker`.
 

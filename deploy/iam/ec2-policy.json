@@ -8,6 +8,13 @@
     { "Sid": "ReadBankFilesFromS3", "Effect": "Allow", "Action": ["s3:GetObject"],
       "Resource": "arn:aws:s3:::*/*" },
     { "Sid": "DecryptS3Objects", "Effect": "Allow", "Action": "kms:Decrypt", "Resource": "*",
-      "Condition": { "StringLike": { "kms:ViaService": "s3.*.amazonaws.com" } } }
+      "Condition": { "StringLike": { "kms:ViaService": "s3.*.amazonaws.com" } } },
+    { "Sid": "SapExtractionLogsToCloudWatch", "Effect": "Allow",
+      "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
+                 "logs:DescribeLogStreams", "logs:PutRetentionPolicy"],
+      "Resource": ["arn:aws:logs:us-east-1:203456943124:log-group:/sap-extraction-api",
+                   "arn:aws:logs:us-east-1:203456943124:log-group:/sap-extraction-api:*"] },
+    { "Sid": "CloudWatchAgentDescribe", "Effect": "Allow", "Action": "logs:DescribeLogGroups",
+      "Resource": "*" }
   ]
 }

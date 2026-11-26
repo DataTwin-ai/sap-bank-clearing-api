@@ -6,6 +6,7 @@ This page is for the team that calls the API from AR Inbox.
 |---|---|---|---|
 | 1. Invoice | `POST /api/invoice/post` | Posts a **new** customer invoice and returns its document number | `active_bt3i.documentid` = SAP document number |
 | 2. Clearing | `POST /api/clearing/post` | Posts the bank receipt and clears **all** invoices of the connection in **one** document | `active_cnx.clearingdocid` = SAP clearing document number |
+| 3. Auto-match (optional) | `POST /api/clearing/match` | Finds which **SAP open invoices** a bank receipt pays, creates the connection and clears it (step 2 logic) | `active_cnx` rows (new connection), then `clearingdocid` |
 
 Step 2 finds each invoice in SAP through the `documentid` written in step 1, so run step 1 for every
 invoice of a connection first.
@@ -16,28 +17,50 @@ Every call needs the header `X-API-Key: <key>`. Swagger: `<base URL>/docs`.
 Always call with `"dry_run": true` first. A dry run runs every check (step 1 also runs an SAP
 simulation), posts nothing and writes nothing.
 
-### SAP values from config.ini
+### Company code, customer and SAP accounts: found by the API
 
-AR Inbox does not have to send SAP company code, G/L accounts or SAP customer numbers. They are set once per
-organisation in `config.ini` (on the server: SSM `/sap-bank-clearing-api/config.ini`):
+AR Inbox does not have to send SAP company code, customer number or G/L accounts. An organisation has items in
+several SAP company codes (OM0000000002: DPDL and 01AB), so the company code is found **per invoice**:
+
+| Value | Taken from, in this order |
+|---|---|
+| Company code + customer | 1. the request / Excel row<br>2. **SAP**: the company code and customer where the invoice is open with the same amount (bank post, clearing)<br>3. DataTwin tables: `bukrs` stored by the SAP extraction (`active_bt3i`, `active_bt3h`); for invoice posting this is the only lookup, because the invoice is not in SAP yet<br>4. `[org:<org_id>]` `company_code`; customer: `[customers:<org_id>]` by customer name |
+| Bank G/L, house bank, value date, revenue G/L, tax code, currency | 1. the request / Excel row<br>2. `[company:<company code>]`<br>3. `[org:<org_id>]` (only when the org's `company_code` is the same company) |
+
+SAP comes before the DataTwin tables because document numbers repeat across company codes (1800000003 exists in
+01AB, ITC3 and SGG1); only SAP knows which one is open with this amount. When an invoice is open in more than one
+company with the same amount, the request is INVALID and asks for `company_code`.
 
 ```ini
-[org:OM0000000001]
-company_code = DAT1
+[company:DAT1]
 currency = INR
 gl_account = 40400000          ; revenue G/L (invoice posting)
 tax_code =                     ; empty = no tax
-bank_gl = 24520000             ; bank G/L (clearing): Balances with scheduled banks - Curr accounts
-value_date_required = true     ; 24520000 (field status G005) needs a value date: value_date = posting_date
+bank_gl = 24520000             ; Balances with scheduled banks - Curr accounts (field status G005)
+value_date_required = true     ; G005 needs a value date: value_date = posting_date
+
+[company:DPDL]
+currency = INR
+bank_gl = 10601012             ; (DPDL) SBI Receipt
+house_bank = SBIDL             ; field status requires house bank + account ID
+house_bank_account = SBIM
+value_date_required = true
+
+[company:01AB]
+currency = INR
+bank_gl = 100104               ; ICICI (Inc Bank), field status G001: no value date / house bank
+
+[org:OM0000000001]
+company_code = DAT1            ; last fallback for this org
 
 [customers:OM0000000001]
 ; DataTwin customer name (active_bt3i.sendername / active_cnx.customername) = SAP customer number
 TEST Customer_02 TEST02 = 30000001
 ```
 
-Order: request value > Excel column (invoice files) > `[org:…]` / `[customers:…]`. The response shows what was taken
-from config in `from_config` (and `customer_from`). A customer name with no entry in `[customers:…]` returns INVALID
-with the line to add.
+The response shows where each value came from: `company_from`, `customer_from`, `from_config` (clearing, invoice) and
+`results[].resolved` (bank post). A wrong company code in the request gets a hint, e.g. "this reference is open in SAP
+for company 01AB / customer 0000100027 (5000.00 INR)".
 
 ---
 
@@ -332,7 +355,110 @@ Every row of the connection (bank and invoices) gets the same number. A value th
 
 ---
 
-## 3. Bank receipts
+## 3. Auto-match: bank receipts with SAP open invoices
+
+For invoices that are **already open in SAP** (posted in SAP, or by step 1): the API finds the invoices a bank
+receipt pays, writes the connection to `active_cnx` and clears it. AR Inbox does not have to build the connection.
+
+### How a receipt is matched
+
+| Input | Where from |
+|---|---|
+| Bank receipts | `active_bs` of the org: credit > 0, `documentid` empty (not posted in SAP yet). Or `bank_items` in the request (dry run only) |
+| Open invoices | SAP BSID, **live** (not the extracted copy, which can be out of date), customer names from KNA1 |
+| Company codes of the org | `[org:<org_id>] company_codes` in config.ini, else the `bukrs` the SAP extraction stored for the org in `active_bt3h` / `active_bt3i` |
+
+| Result | When | What happens |
+|---|---|---|
+| `MATCHED` | The bank narration names the SAP customer (2+ words of the name) **or** an invoice reference (BELNR / XBLNR / ZUONR / VBELN), the invoices add up to **exactly** the bank amount, same currency, posted on or before the bank date, and there is **one** answer only | Can be connected and cleared |
+| `REVIEW` | Same, but several invoice sets fit (e.g. many invoices with the same amount), the name is one word only (e.g. `SHANKAR`), or two receipts claim the same invoice | Nothing written. `suggested` + `options`: a person picks one in AR Inbox, or sends it to `/api/clearing/post` |
+| `AMOUNT_ONLY` | An open invoice has the amount, but the narration names neither the customer nor the invoice | Never connected: the same amount alone is not proof |
+| `CONNECTED` | The receipt already has a connection | With `clear: true` it is cleared like `/api/clearing/post` |
+| `NO_MATCH` | Nothing fits | `reason` says why |
+
+Up to `max_invoices` (default 5) invoices of **one** customer can make up one receipt. Partial payments are not matched.
+Invoices that are already in an open connection are left out.
+
+### Request
+
+```json
+{
+  "org_id": "OM0000000002",
+  "date_from": "2026-11-01",
+  "date_to": "2026-11-30",
+  "create_connections": false,
+  "clear": false,
+  "dry_run": true
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `org_id` | required | Organisation |
+| `date_from`, `date_to` | all | Bank transaction date range |
+| `bank_refs` | all | Only these receipts (`transactionref` / UTR / `transactionnumber`). **Required for real clearing** |
+| `bank_items` | – | Receipts in the request instead of `active_bs` (`utr`, `date`, `amount`, `narration`): to try the matching, dry run only |
+| `max_invoices` | 5 | Most invoices one receipt may pay (1–10) |
+| `posting_date` | bank date | SAP posting date of the clearing |
+| `create_connections` | false | Write `MATCHED` receipts to `active_cnx` |
+| `clear` | false | Clear `MATCHED` (and `CONNECTED`, not yet cleared) receipts |
+| `dry_run` | **true** | true = nothing written, nothing posted; the clearing is checked against SAP with the connection as it would be written |
+
+Order for real data: 1) dry run, read `results`; 2) `dry_run: false`, `create_connections: true`, `clear: true`,
+`bank_refs: [...]` for the receipts you checked.
+
+### The connection that is written (AR Inbox layout)
+
+One row per invoice (`sno` 1..n) and one bank row (`sno` n+1), all with `documentid` = `connectinggroupref` =
+bank `transactionnumber`:
+
+| Column | Invoice row | Bank row |
+|---|---|---|
+| `connectingdocumentnumber` | SAP document number (BELNR) | UTR (`transactionref`) |
+| `customeraccount` / `customername` | SAP customer / KNA1 name | empty |
+| `documentvalue` = `sourceamount` | invoice amount | bank amount |
+| `documentstatus` | `fully_cleared` | `fully_cleared` |
+| `transactiontype` / `themename` / `processcode` | `Connections` / `IT_CNX` / `CNX` | same |
+| `transactionid` | `CTXSAP…` (one per connection) | same |
+| `linkreftype` | `SAP_AUTO_MATCH` (rows written by this API) | same |
+
+Nothing is written when the connection id already exists. `/api/clearing/post` takes the SAP customer from
+`customeraccount` when the connection has exactly one.
+
+### Response (dry run, shortened)
+
+```json
+{
+  "batch_id": "MCH20261124115920-1A2B",
+  "summary": { "bank_receipts": 5, "MATCHED": 2, "REVIEW": 2, "AMOUNT_ONLY": 0, "CONNECTED": 0, "NO_MATCH": 1 },
+  "sap": { "open_invoices": 44, "company_codes": ["01AB", "DAT1", "MH01", "TA02", "..."],
+           "company_codes_from": "DataTwin tables (bukrs stored by the SAP extraction for this org)" },
+  "results": [
+    {
+      "status": "MATCHED", "confidence": "HIGH", "connection_id": "DEMO/20261124/1192980",
+      "bank": { "utr": "DTDEMO1192980", "date": "2026-11-24", "amount": 1192980.0, "currency": "INR (default)",
+                "narration": "NEFT Cr-DTDEMO1192980-HDFC0000240-TEST CUSTOMER_02 TEST02--RE-0090000064" },
+      "reason": "invoice 4800000014 / 0090000064 referenced in the bank narration; customer name 'TEST Customer_02 TEST02' in the bank narration; invoice total = bank amount 1192980.00 INR",
+      "match": { "company_code": "DAT1", "customer": "0030000001", "customer_name": "TEST Customer_02 TEST02",
+                 "invoices": [ { "belnr": "4800000014", "gjahr": "2026", "xblnr": "0090000064", "amount": 1192980.0, "currency": "INR" } ] },
+      "clearable": true,
+      "connection": { "created": false, "preview_rows": 2, "reason": "dry_run" },
+      "clearing": { "result": "VALID", "message": "Validation passed", "company_code": "DAT1", "bank_gl": "0024520000" }
+    },
+    {
+      "status": "REVIEW", "confidence": "MEDIUM",
+      "reason": "18 invoice sets add up to 118000.00 INR; the suggestion takes the oldest invoices - pick one ...",
+      "suggested": { "company_code": "TA02", "customer": "0000000006", "invoices": [ { "belnr": "0000010001", "amount": 118000.0 } ] }
+    }
+  ]
+}
+```
+
+`clearable: false` means the company code has no `bank_gl` in `[company:<bukrs>]` yet.
+
+---
+
+## 4. Bank receipts
 
 | Case | Call |
 |---|---|
@@ -381,7 +507,7 @@ More rules for bank rows:
 - A 17–18 character UTR (e.g. `PHDFCH01086920604`) is accepted: it is not sent as SAP reference (XBLNR, 16 characters),
   so SAP's duplicate check by UTR is skipped (warning in the row), but `active_bs` is still linked by it.
 
-## 4. Before the first real run
+## 5. Before the first real run
 
 | # | Who | What | Status |
 |---|---|---|---|
@@ -391,7 +517,7 @@ More rules for bank rows:
 | 4 | Finance | SAP customer number, company code, revenue G/L and tax code per invoice / org | **open**: AR Inbox must send them |
 | 5 | DevOps | Deploy this API version to the live server | **open** |
 
-## 5. Undo
+## 6. Undo
 
 | What | SAP | DB |
 |---|---|---|

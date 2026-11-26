@@ -484,6 +484,62 @@ class ClearingResponse(BaseModel):
             extra = "allow"
 
 
+_MATCH_EXAMPLE = {
+    "org_id": "OM0000000002",
+    "date_from": "2026-11-01",
+    "date_to": "2026-11-30",
+    "bank_refs": None,
+    "max_invoices": 5,
+    "create_connections": False,
+    "clear": False,
+    "dry_run": True,
+}
+
+
+class MatchBankItem(BaseModel):
+    utr: str = Field(description="Bank reference / UTR")
+    date: str = Field(description="Bank transaction date (YYYY-MM-DD)")
+    amount: float = Field(description="Amount received")
+    narration: str = Field(default="", description="Bank narration (customer name, invoice references)")
+    currency: Optional[str] = Field(default=None, description="Currency (default: [org:] currency, else INR)")
+    transaction_number: Optional[str] = Field(default=None, description="Connection id to use in the preview")
+
+
+class MatchRequest(BaseModel):
+    org_id: str = Field(description="Organisation (active_bs.orgid / active_cnx.orgid)")
+    bank_items: Optional[List[MatchBankItem]] = Field(
+        default=None,
+        description="Check these bank receipts instead of the ones in active_bs (dry_run only, nothing is written)",
+    )
+    date_from: Optional[str] = Field(default=None, description="Bank receipts from this date (YYYY-MM-DD)")
+    date_to: Optional[str] = Field(default=None, description="Bank receipts up to this date (YYYY-MM-DD)")
+    bank_refs: Optional[List[str]] = Field(
+        default=None,
+        description="Only these bank receipts (transactionref / UTR / transactionnumber). "
+                    "Required for real clearing (clear = true, dry_run = false).",
+    )
+    max_invoices: int = Field(default=5, description="Most invoices one receipt may pay (1-10)")
+    posting_date: Optional[str] = Field(
+        default=None, description="SAP posting date for the clearing (default: the bank transaction date)"
+    )
+    create_connections: bool = Field(
+        default=False, description="Write MATCHED receipts to active_cnx as connections (needs dry_run = false)"
+    )
+    clear: bool = Field(
+        default=False,
+        description="Clear MATCHED receipts (and existing, not yet cleared connections) in SAP: "
+                    "dry_run = true validates only",
+    )
+    dry_run: bool = Field(default=True, description="true = nothing is written to the database or posted in SAP")
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(json_schema_extra={"example": _MATCH_EXAMPLE})
+    else:
+
+        class Config:
+            schema_extra = {"example": _MATCH_EXAMPLE}
+
+
 class HealthResponse(BaseModel):
     status: str = Field("ok", example="ok")
     service: str = Field("bank_posting", example="bank_posting")
@@ -794,6 +850,48 @@ async def clearing_post(payload: ClearingRequest):
         )
     except Exception as e:
         logger.exception(f"Connection clearing failed: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"status": "error", "message": str(e)},
+        )
+
+
+@app.post(
+    "/api/clearing/match",
+    responses={
+        200: {"description": "Match result per bank receipt (check `results[].status`)"},
+        400: {"model": ErrorResponse, "description": "Bad request"},
+        401: {"description": "Missing or invalid X-API-Key"},
+        500: {"model": ErrorResponse, "description": "Server, database or SAP error"},
+    },
+    dependencies=[Depends(require_api_key)],
+    tags=["Connection Clearing"],
+    summary="Match Bank Receipts with SAP Open Invoices",
+    description=(
+        "Matches the org's bank receipts (`active_bs`, not posted yet) with the **open customer invoices in "
+        "SAP** (BSID, live) in the org's company codes.\n\n"
+        "A receipt is **MATCHED** only when the bank narration names the SAP customer or an invoice "
+        "reference, the invoices add up to exactly the bank amount in the same currency, and there is one "
+        "answer only. Several answers = **REVIEW**; amount without a name = **AMOUNT_ONLY** (never connected).\n\n"
+        "`create_connections: true` writes MATCHED receipts to `active_cnx` (AR Inbox layout, SAP document "
+        "numbers). `clear: true` clears them with the `/api/clearing/post` logic. `dry_run: true` (default) "
+        "writes and posts nothing; real clearing needs `bank_refs`."
+    ),
+)
+async def clearing_match(payload: MatchRequest):
+    from bank_posting.matching import process_auto_match
+
+    data = payload.model_dump() if PYDANTIC_V2 else payload.dict()
+    try:
+        return await run_in_threadpool(process_auto_match, data)
+    except ValueError as e:
+        logger.warning(f"[MATCH] 400 Bad Request: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"status": "error", "message": str(e)},
+        )
+    except Exception as e:
+        logger.exception(f"Auto match failed: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"status": "error", "message": str(e)},

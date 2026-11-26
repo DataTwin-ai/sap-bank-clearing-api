@@ -38,13 +38,15 @@ from bank_posting.posting import (
     _text,
     alpha,
     configured_sap_tables,
+    db_company_codes,
     is_true,
     load_bank_config,
     logger,
-    org_settings,
     parse_amount,
     parse_date,
+    resolve_company,
     sap_customer_for,
+    sap_defaults,
 )
 from db_manager import get_db_credentials
 
@@ -83,7 +85,8 @@ def read_connection(org_id: str, connection_id: str, column: str,
             )
             has_col = cur.fetchone() is not None
             q = sql.SQL(
-                "SELECT source, sno, connectingdocumentnumber, documentvalue, documentstatus, {col}, customername "
+                "SELECT source, sno, connectingdocumentnumber, documentvalue, documentstatus, {col}, customername, "
+                "customeraccount "
                 "FROM {tbl} WHERE orgid = %s AND documentid = %s "
                 "ORDER BY source DESC, length(sno), sno"
             ).format(
@@ -94,7 +97,7 @@ def read_connection(org_id: str, connection_id: str, column: str,
             rows = [
                 {"source": r[0], "sno": r[1], "ref": _text(r[2]),
                  "amount": parse_amount(r[3]), "status": r[4], "clearing_doc": _text(r[5]),
-                 "customer_name": " ".join(_text(r[6]).split())}
+                 "customer_name": " ".join(_text(r[6]).split()), "customer_account": _text(r[7])}
                 for r in cur.fetchall()
             ]
     finally:
@@ -106,6 +109,9 @@ def read_connection(org_id: str, connection_id: str, column: str,
         "bank": [r for r in rows if (r["source"] or "").lower() == "bank"],
         "cleared_by": sorted({r["clearing_doc"] for r in rows if r["clearing_doc"]}),
         "customer_names": sorted({r["customer_name"] for r in rows if r["customer_name"]}),
+        # SAP customer on the invoice rows (AR Inbox fills it when it connects SAP open items)
+        "customer_accounts": sorted({alpha(r["customer_account"]) for r in rows
+                                     if (r["source"] or "").lower() == "invoice" and r["customer_account"]}),
     }
 
 
@@ -200,6 +206,8 @@ def fill_from_connection(item: Dict[str, Any], cnx: Dict[str, Any], match_by: st
                 inv["connection_ref"] = ref
                 if len(found) == 1:
                     inv["invoice_ref"] = found[0]
+                elif not found and ref.isdigit() and len(ref) <= 10:
+                    inv["note"] = "not in active_bt3i; used as the SAP document number"
                 elif not found:
                     inv["unmapped"] = True
                     errs.append(f"Invoice '{ref}' has no SAP document number in active_bt3i.documentid: "
@@ -383,20 +391,23 @@ class SAPClearingClient(SAPBankPostingClient):
 # Main entry
 # ---------------------------------------------------------------------------
 def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: bool = True,
-                     match_by: Optional[str] = None) -> Dict[str, Any]:
+                     match_by: Optional[str] = None,
+                     preview_connection: Optional[Dict[str, Any]] = None,
+                     index: Optional[OpenItemIndex] = None) -> Dict[str, Any]:
+    """
+    preview_connection (dry_run only): connection rows as read_connection() returns them, used when
+    the connection is not in active_cnx yet (POST /api/clearing/match validates a match before writing it).
+    index: SAP items already read by the caller (POST /api/clearing/match reads them once per batch).
+    """
+    if preview_connection is not None and not dry_run:
+        raise ValueError("preview_connection is only allowed with dry_run")
     cfg = load_bank_config()
     column = _check_column_name(cfg["cnx_clearing_column"])
     match_by = (match_by or cfg["clearing_match_by"]).upper()
     if match_by not in MATCH_FIELDS:
         raise ValueError(f"match_by must be one of {MATCH_FIELDS}")
 
-    org = org_settings(_text(payload.get("org_id")))
-    from_config = sorted(k for k in ("company_code", "customer", "bank_gl", "currency", "doc_type",
-                                     "house_bank", "house_bank_account")
-                         if _blank(payload.get(k)) and org.get(k))
-    if _blank(payload.get("value_date")) and is_true(org.get("value_date_required")):
-        from_config.append("value_date (= posting_date)")
-    item = normalise_clearing(payload, cfg, org)
+    item = normalise_clearing(payload, cfg, None)  # request values only; config defaults come after step 2
     if not item["org_id"] or not item["connection_id"]:
         raise ValueError("org_id and connection_id (active_cnx.documentid) are required")
 
@@ -416,31 +427,34 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
     except Exception as e:
         logger.exception(f"{log}: could not read {CNX_TABLE}: {e}")
         raise RuntimeError(f"Could not read {CNX_TABLE}: {e}") from e
+    if preview_connection is not None and not cnx["rows"]:
+        cnx = {**preview_connection, "column_exists": cnx["column_exists"]}
+        logger.info(f"{log}: connection not in {CNX_TABLE} yet - checking the preview rows")
     logger.info(f"{log}: connection rows={len(cnx['rows'])} (invoice {len(cnx['invoices'])}, bank {len(cnx['bank'])}), "
                 f"{column} exists={cnx['column_exists']}, already cleared by={cnx['cleared_by'] or '-'}, "
                 f"customer names={cnx['customer_names'] or '-'}")
-    if from_config:
-        logger.info(f"{log}: from config [org:{item['org_id']}]: {', '.join(from_config)}")
 
     errs: List[str] = []
     warnings: List[str] = []
     filled: List[str] = []
+    from_config: List[str] = []
     customer_from: Optional[str] = None
+    company_from: Optional[str] = None
+    sap_tables: List[str] = [] if index is None else ["read by the caller"]
+    index_box: List[OpenItemIndex] = [index] if index is not None else []
 
-    # SAP customer: request > [org:..] customer > [customers:..] mapping of the connection's customer name
-    if not item["customer"] and cnx["rows"]:
-        names = cnx["customer_names"]
-        if len(names) == 1:
-            sap_no = sap_customer_for(item["org_id"], names[0])
-            if sap_no:
-                item["customer"] = alpha(sap_no)
-                customer_from = f"config [customers:{item['org_id']}] '{names[0]}' = {item['customer']}"
-                logger.info(f"{log}: customer {item['customer']} from {customer_from}")
-            else:
-                errs.append(f"No SAP customer for '{names[0]}': add '{names[0]} = <SAP customer>' under "
-                            f"[customers:{item['org_id']}] in config.ini, or send 'customer'")
-        elif len(names) > 1:
-            errs.append(f"Connection has several customer names ({', '.join(names)}): send 'customer'")
+    def sap_index() -> OpenItemIndex:
+        """BSID / BSAD from SAP, read once per request."""
+        if not index_box:
+            sap_tables.extend(configured_sap_tables()[0])
+            if "BSAD" not in sap_tables:
+                sap_tables.append("BSAD")
+            try:
+                index_box.append(OpenItemIndex(sap_tables))
+            except Exception as e:
+                logger.exception(f"{log}: could not read {', '.join(sap_tables)} from SAP: {e}")
+                raise RuntimeError(f"Could not read {', '.join(sap_tables)} from SAP: {e}") from e
+        return index_box[0]
 
     if not cnx["rows"]:
         errs.append(f"Connection '{item['connection_id']}' not found in {CNX_TABLE} for org {item['org_id']}")
@@ -466,7 +480,75 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
             f"or send update_db = false"
         )
 
-    # 2. format + amounts
+    # 2. company code and customer: request > SAP open items of the invoices (same amounts)
+    #    > DataTwin table (bukrs from SAP extraction) > [customers:..] / [org:..] config.
+    #    SAP first: document numbers repeat across company codes, only SAP knows which one is open.
+    usable = [i for i in item["invoices"] if i["invoice_ref"] and not i.get("unmapped")]
+    accounts = cnx.get("customer_accounts") or []
+    if not item["customer"] and len(accounts) == 1:
+        item["customer"] = accounts[0]
+        customer_from = f"connection {CNX_TABLE}.customeraccount ({accounts[0]})"
+    elif not item["customer"] and len(accounts) > 1:
+        errs.append(f"Connection has several customer accounts ({', '.join(accounts)}): send 'customer'")
+    if cnx["rows"] and usable and (not item["company_code"] or not item["customer"]):
+        b, k, note = resolve_company(sap_index(), [(i["invoice_ref"], i["amount"]) for i in usable], match_by,
+                                     kunnr=item["customer"] or None, bukrs=item["company_code"] or None)
+        if b:
+            if not item["company_code"]:
+                item["company_code"] = b
+                company_from = f"SAP open items ({note})"
+            if not item["customer"] and k:
+                item["customer"] = k
+                customer_from = f"SAP open items of the invoices (customer {k})"
+        elif note:
+            errs.append(f"Company code / customer not clear: invoices are {note}")
+    if cnx["rows"] and usable and not item["company_code"]:
+        lookup = [i["invoice_ref"] for i in usable] + [i["connection_ref"] for i in usable if i.get("connection_ref")]
+        try:
+            db = db_company_codes(item["org_id"], lookup)
+        except Exception as e:
+            logger.warning(f"{log}: company code lookup in DataTwin tables failed: {e}")
+            db = {}
+        codes = sorted({c for cs in db.values() for c in cs})
+        if len(codes) == 1:
+            item["company_code"] = codes[0]
+            company_from = f"DataTwin table (bukrs {codes[0]}; invoices not open in SAP)"
+    if not item["customer"] and cnx["rows"]:
+        names = cnx["customer_names"]
+        if len(names) == 1:
+            sap_no = sap_customer_for(item["org_id"], names[0])
+            if sap_no:
+                item["customer"] = alpha(sap_no)
+                customer_from = f"config [customers:{item['org_id']}] '{names[0]}' = {item['customer']}"
+            else:
+                errs.append(f"No SAP customer for '{names[0]}': add '{names[0]} = <SAP customer>' under "
+                            f"[customers:{item['org_id']}] in config.ini, or send 'customer'")
+        elif len(names) > 1:
+            errs.append(f"Connection has several customer names ({', '.join(names)}): send 'customer'")
+
+    # 3. company values: [company:<bukrs>] > [org:<org_id>] (only where the request left them empty)
+    defaults = sap_defaults(item["org_id"], item["company_code"])
+    if not item["company_code"] and defaults.get("company_code"):
+        item["company_code"] = defaults["company_code"].strip().upper()
+        from_config.append("company_code")
+        defaults = sap_defaults(item["org_id"], item["company_code"])
+    for key, conv in (("bank_gl", alpha), ("currency", str.upper), ("house_bank", str.upper),
+                      ("house_bank_account", str.upper)):
+        if not item[key] and defaults.get(key):
+            item[key] = conv(defaults[key].strip())
+            from_config.append(key)
+    if _blank(payload.get("doc_type")) and defaults.get("doc_type"):
+        item["doc_type"] = defaults["doc_type"].strip().upper()
+        from_config.append("doc_type")
+    if item["value_date"] is None and _blank(payload.get("value_date")) \
+            and is_true(defaults.get("value_date_required")) and item["posting_date"]:
+        item["value_date"] = item["posting_date"]
+        from_config.append("value_date (= posting_date)")
+    if company_from or customer_from or from_config:
+        logger.info(f"{log}: company {item['company_code'] or '-'} ({company_from or 'request/config'}), "
+                    f"customer {item['customer'] or '-'} ({customer_from or 'request'}), from config: {from_config or '-'}")
+
+    # 4. format + amounts
     errs.extend(validate_clearing(item, match_by))
     if item["utr"] and 16 < len(item["utr"]) <= 18:
         warnings.append(
@@ -474,18 +556,9 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
             f"SAP's duplicate check by UTR is skipped"
         )
 
-    # 3. SAP open items
-    sap_tables: List[str] = []
+    # 5. SAP open items
     if not errs:
-        sap_tables = configured_sap_tables()[0]
-        if "BSAD" not in sap_tables:
-            sap_tables.append("BSAD")
-        try:
-            index = OpenItemIndex(sap_tables)
-        except Exception as e:
-            logger.exception(f"{log}: could not read {', '.join(sap_tables)} from SAP: {e}")
-            raise RuntimeError(f"Could not read {', '.join(sap_tables)} from SAP: {e}") from e
-        errs.extend(check_invoices_in_sap(item, index, match_by))
+        errs.extend(check_invoices_in_sap(item, sap_index(), match_by))
         for inv in item["invoices"]:
             logger.info(f"{log}: SAP check {inv['invoice_ref']}: {inv.get('sap_status')} - {inv.get('message')}")
 
@@ -553,6 +626,7 @@ def process_clearing(payload: Dict[str, Any], dry_run: bool = False, update_db: 
         ],
         "filled_from_connection": filled,
         "from_config": from_config,
+        **({"company_from": company_from} if company_from else {}),
         **({"customer_from": customer_from} if customer_from else {}),
         "connection": {
             "rows": len(cnx["rows"]),

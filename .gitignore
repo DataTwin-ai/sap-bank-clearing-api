@@ -9,6 +9,7 @@
 !/sap_odata_extractor.py
 !/main.py
 !/api.py
+!/sap_sync_scheduler.py
 !/bank_posting/
 !/.vscode/
 !/Dockerfile

@@ -245,5 +245,12 @@ API container ── sap_sync_scheduler.py (one uvicorn worker, every 60 s)
 
 Only one uvicorn worker runs the sync (lock file `data/sap_sync/scheduler.lock`). A run starts only after the previous one ended; a run still busy after 15 minutes is stopped (`SAP_SYNC_TIMEOUT`). A poll of the same table from another place, such as an old `sap-extraction-worker` on the host, is skipped through a database lock, so nothing is polled or sent twice. Still, stop that worker once the container sync runs (`sudo systemctl disable --now sap-extraction-worker`, if it exists).
 
+AR Inbox fields: before each send the sync adds the customer name (SAP KNA1), the company code currency
+(SAP T001; kept in `sap_ref_customer` / `sap_ref_company`, refreshed hourly), the invoice reference and
+TDS / advance = 0 to BSID / BSAD rows; theme mapping in
+[sap-extraction-api/deploy/sql/sap_ar_inbox_fields.sql](sap-extraction-api/deploy/sql/sap_ar_inbox_fields.sql)
+(also backfills existing rows). An open invoice cleared in SAP gets `settlementstatus = 'Cleared'`,
+`settlementdate` and `reference2` = clearing document in `active_bt3h`.
+
 Run one cycle by hand on the host: `sudo docker exec -w /app/sap_sync sap-bank-clearing-api python cli.py delta --cron`;
 queue status: `... python cli.py delta-status`.

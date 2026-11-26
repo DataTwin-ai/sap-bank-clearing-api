@@ -8,8 +8,9 @@ It runs in two ways that share the same code:
 |---|---|---|
 | API | `uvicorn main:app` (FastAPI) | On-demand extraction, previews, Swagger at `/docs` |
 | Cron | `deploy/run_cron.sh sync` → `cli.py` | Scheduled full sync |
-| Delta cron | `deploy/run_cron.sh delta --cron` (`/etc/cron.d`, `DELTA_MODE=cron`) | Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
-| Delta worker | `cli.py worker` (systemd) | Same as the delta cron as a long-running loop; use one of the two |
+| Delta, in the bank API | `cli.py delta --cron`, started every minute by the sap-bank-clearing-api container (`sap_sync_scheduler.py`, settings in `container.ini`) | **Current setup.** Every minute: new / changed SAP rows → `active_<table>` → ingestion API |
+| Delta cron | `deploy/run_cron.sh delta --cron` (`/etc/cron.d`, `DELTA_MODE=cron`) | Same on its own server (see [docs/AWS_CRON_SETUP.md](docs/AWS_CRON_SETUP.md)); never next to the container sync |
+| Delta worker | `cli.py worker` (systemd) | Same as a long-running loop on its own server; never next to the container sync |
 
 A file lock (`data/pipeline.lock`) lets only one DB-writing run happen at a time.
 If a second run starts, the API returns **409** and the cron run exits with **75**.

@@ -39,6 +39,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+import sap_guard
 import settings
 from logger_setup import get_logger, setup_logging
 
@@ -144,6 +145,7 @@ def health() -> Dict[str, Any]:
         "service": "sap-extraction-api",
         "config_file_found": settings.CONFIG_FILE.exists(),
         "configured_tables": cfg["tables"],
+        "sap_calls_paused": bool(sap_guard.status().get("blocked")),
     }
 
 

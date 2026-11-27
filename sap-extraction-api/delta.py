@@ -36,6 +36,8 @@ from context import ReserveMasterObjectIDs
 from db_manager import clean_column_name, get_active_table_name, get_db_credentials
 from logger_setup import get_logger
 from pipeline import PipelineBusy, pipeline_lock
+import sap_guard
+from sap_guard import SAPAuthBlocked
 from sap_odata_extractor import SAPODataExtractor, clean_table_name
 
 logger = get_logger("SAP_Pipeline.Delta")
@@ -640,10 +642,19 @@ def poll_all(env: Optional[str] = None) -> Dict[str, Any]:
             # the previous poll of this table (e.g. last minute's cron run) is still running
             logger.info(f"[DELTA] poll {t} skipped: previous poll still running")
             out["tables"][t] = {"status": "skipped", "message": "previous poll still running"}
+        except SAPAuthBlocked as exc:
+            # repeated SAP login failures: no request was sent; skip the remaining tables too
+            logger.warning(f"[DELTA] SAP polling paused: {exc}")
+            out["status"] = "failed"
+            out["sap_paused"] = str(exc)
+            break
         except Exception as exc:
             logger.error(f"[DELTA] poll {t} failed: {exc}")
             out["tables"][t] = {"status": "failed", "error": str(exc)}
             out["status"] = "partial_success"
+            if sap_guard.status().get("blocked"):
+                out["sap_paused"] = "SAP calls paused after failed logins"
+                break
     if out["tables"] and all(v.get("status") == "failed" for v in out["tables"].values()):
         out["status"] = "failed"
     return out

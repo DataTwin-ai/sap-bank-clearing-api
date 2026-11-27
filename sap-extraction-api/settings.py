@@ -36,6 +36,29 @@ def load_config() -> configparser.ConfigParser:
     return cfg
 
 
+_config_mtime: Optional[tuple] = None
+
+
+def reload_if_changed() -> bool:
+    """Re-reads the config files when one changed on disk (e.g. a new SAP password while the worker runs)."""
+    global _config_mtime
+    stamp = []
+    for f in (BASE_CONFIG_FILE, CONFIG_FILE):
+        try:
+            stamp.append(f.stat().st_mtime if f is not None else None)
+        except OSError:
+            stamp.append(None)
+    stamp = tuple(stamp)
+    if _config_mtime is None:
+        _config_mtime = stamp
+        return False
+    if stamp != _config_mtime:
+        _config_mtime = stamp
+        load_config.cache_clear()
+        return True
+    return False
+
+
 def get(section: str, key: str, env: Optional[str] = None, default: str = "") -> str:
     """Environment variable `env` wins, then config.ini [section] key, then default."""
     if env and os.getenv(env, "").strip():

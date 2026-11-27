@@ -17,8 +17,10 @@ from typing import Optional
 
 import delta
 import ingestion
+import sap_guard
 from logger_setup import get_logger
 from pipeline import PipelineBusy
+from sap_guard import SAPAuthBlocked
 
 logger = get_logger("SAP_Pipeline.Worker")
 
@@ -55,6 +57,7 @@ def run(env: Optional[str] = None) -> int:
     logger.info(f"[WORKER] started: tables={cfg['tables']} every {cfg['poll_seconds']}s, "
                 f"ingestion={'on -> ' + ing_cfg['base_url'] if ing_cfg['enabled'] else 'off'}")
     ing_thread: Optional[threading.Thread] = None
+    paused_logged_at = 0.0
 
     while not stop.is_set():
         t0 = time.time()
@@ -63,10 +66,19 @@ def run(env: Optional[str] = None) -> int:
                 break
             try:
                 delta.poll_table(table, env=env)
+                paused_logged_at = 0.0
+            except SAPAuthBlocked as exc:
+                # No SAP request was sent. Say so once, then every 15 minutes.
+                if time.time() - paused_logged_at > 900:
+                    logger.error(f"[WORKER] SAP polling paused: {exc}")
+                    paused_logged_at = time.time()
+                break
             except PipelineBusy:
                 logger.warning(f"[WORKER] previous poll of {table} still running; skipped")
             except Exception as exc:
                 logger.error(f"[WORKER] poll {table} failed: {exc}")
+                if sap_guard.status().get("blocked"):
+                    break   # this poll's 401 just paused SAP calls; don't try the other tables
 
         if ing_cfg["enabled"] and not stop.is_set() and (ing_thread is None or not ing_thread.is_alive()):
             ing_thread = threading.Thread(target=_ingest_safely, args=(env,), name="ingestion", daemon=True)

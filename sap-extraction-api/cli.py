@@ -102,8 +102,16 @@ def main(argv=None) -> int:
     sub.add_parser("delta-status", help="Queue counts, last poll, recent ingestion runs")
     p = sub.add_parser("delta-retry", help="Move FAILED rows back to PENDING")
     p.add_argument("table")
+    sub.add_parser("sap-guard", help="Show whether SAP calls are paused after failed logins")
+    sub.add_parser("sap-unblock", help="Resume SAP calls after failed logins (next call is a real login)")
 
     args = parser.parse_args(argv)
+
+    if args.action in ("sap-guard", "sap-unblock"):
+        setup_logging("cron", console=args.verbose or sys.stdout.isatty())
+        import sap_guard
+        _print(sap_guard.status() if args.action == "sap-guard" else sap_guard.unblock())
+        return EXIT_OK
 
     if args.action == "worker":
         setup_logging("worker", console=args.verbose or sys.stdout.isatty())
@@ -149,7 +157,9 @@ def main(argv=None) -> int:
                 res["status"] = "partial_success"
         elif args.action == "delta-status":
             import delta
+            import sap_guard
             res = delta.status(env=args.env)
+            res["sap_guard"] = sap_guard.status()
         elif args.action == "delta-retry":
             import delta
             res = delta.retry_failed(args.table, env=args.env)

@@ -26,6 +26,7 @@ import requests
 import urllib3
 from requests.auth import HTTPBasicAuth
 
+import sap_guard
 import settings
 from logger_setup import get_logger
 
@@ -47,6 +48,8 @@ def clean_table_name(table_name: str) -> str:
 
 def load_sap_odata_config() -> Dict[str, Any]:
     """Load SAP OData connection settings: environment variables > config.ini [sap]."""
+
+    settings.reload_if_changed()   # a new password in config.ini reaches a running worker
 
     def get_val(env_key: str, ini_key: str, default: str = "") -> str:
         return settings.get("sap", ini_key, env_key, default)
@@ -110,14 +113,19 @@ class SAPODataExtractor:
         if params:
             query_params.update(params)
 
+        sap_guard.check(self.config)   # no request at all while logins are paused
         last_err: Optional[Exception] = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 resp = self.session.get(url, params=query_params, timeout=self.timeout)
                 if resp.status_code in (200, 201):
+                    sap_guard.record_success(self.config)
                     return resp.json() if expect_json else resp.text
 
-                if resp.status_code in (401, 403):
+                if resp.status_code == 401:   # wrong user/password: counts towards the SAP lock
+                    sap_guard.record_auth_failure(self.config, resp.text[:200])
+                    raise SAPODataError(f"SAP login failed (401) as '{self.config.get('user')}'")
+                if resp.status_code == 403:
                     raise SAPODataError(
                         f"SAP authentication/authorization failed ({resp.status_code}): {resp.text[:300]}"
                     )
